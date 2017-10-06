@@ -78,6 +78,8 @@ static struct ipv4_l3fwd_lpm_route ipv4_l3fwd_lpm_route_array[] = {
 	{IPv4(6, 1, 1, 0), 24, 5},
 	{IPv4(7, 1, 1, 0), 24, 6},
 	{IPv4(8, 1, 1, 0), 24, 7},
+	{IPv4(10, 0, 0, 1), 24, 0},
+	{IPv4(10, 0, 0, 2), 24, 1},
 };
 
 static struct ipv6_l3fwd_lpm_route ipv6_l3fwd_lpm_route_array[] = {
