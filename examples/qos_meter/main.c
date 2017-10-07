@@ -171,7 +171,8 @@ app_pkt_handle(struct rte_mbuf *pkt, uint64_t time)
 
 	/* Apply policing and set the output color */
 	action = policer_table[input_color][output_color];
-	app_set_pkt_color(pkt_data, action);
+	/* Disable packet modifications, for P4SC examination */
+	// app_set_pkt_color(pkt_data, action);
 
 	return action;
 }
