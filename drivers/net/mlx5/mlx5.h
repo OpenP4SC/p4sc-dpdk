@@ -50,10 +50,6 @@
 #pragma GCC diagnostic error "-Wpedantic"
 #endif
 
-/* DPDK headers don't like -pedantic. */
-#ifdef PEDANTIC
-#pragma GCC diagnostic ignored "-Wpedantic"
-#endif
 #include <rte_pci.h>
 #include <rte_ether.h>
 #include <rte_ethdev.h>
@@ -61,19 +57,11 @@
 #include <rte_interrupts.h>
 #include <rte_errno.h>
 #include <rte_flow.h>
-#ifdef PEDANTIC
-#pragma GCC diagnostic error "-Wpedantic"
-#endif
 
 #include "mlx5_utils.h"
 #include "mlx5_rxtx.h"
 #include "mlx5_autoconf.h"
 #include "mlx5_defs.h"
-
-#if !defined(HAVE_VERBS_IBV_EXP_CQ_COMPRESSED_CQE) || \
-	!defined(HAVE_VERBS_MLX5_ETH_VLAN_INLINE_HEADER_SIZE)
-#error Mellanox OFED >= 3.3 is required, please refer to the documentation.
-#endif
 
 enum {
 	PCI_VENDOR_ID_MELLANOX = 0x15b3,
@@ -101,7 +89,7 @@ struct mlx5_xstats_ctrl {
 struct priv {
 	struct rte_eth_dev *dev; /* Ethernet device. */
 	struct ibv_context *ctx; /* Verbs context. */
-	struct ibv_device_attr device_attr; /* Device properties. */
+	struct ibv_device_attr_ex device_attr; /* Device properties. */
 	struct ibv_pd *pd; /* Protection Domain. */
 	/*
 	 * MAC addresses array and configuration bit-field.
@@ -144,7 +132,7 @@ struct priv {
 	struct rxq *(*rxqs)[]; /* RX queues. */
 	struct txq *(*txqs)[]; /* TX queues. */
 	/* Indirection tables referencing all RX WQs. */
-	struct ibv_exp_rwq_ind_table *(*ind_tables)[];
+	struct ibv_rwq_ind_table *(*ind_tables)[];
 	unsigned int ind_tables_n; /* Number of indirection tables. */
 	unsigned int ind_table_max_size; /* Maximum indirection table size. */
 	/* Hash RX QPs feeding the indirection table. */
@@ -164,14 +152,6 @@ struct priv {
 	struct mlx5_xstats_ctrl xstats_ctrl; /* Extended stats control. */
 	rte_spinlock_t lock; /* Lock for control functions. */
 };
-
-/* Local storage for secondary process data. */
-struct mlx5_secondary_data {
-	struct rte_eth_dev_data data; /* Local device data. */
-	struct priv *primary_priv; /* Private structure from primary. */
-	struct rte_eth_dev_data *shared_dev_data; /* Shared device data. */
-	rte_spinlock_t lock; /* Port configuration lock. */
-} mlx5_secondary_data[RTE_MAX_ETHPORTS];
 
 /**
  * Lock private structure to protect it from concurrent access in the
@@ -228,7 +208,6 @@ void priv_dev_interrupt_handler_uninstall(struct priv *, struct rte_eth_dev *);
 void priv_dev_interrupt_handler_install(struct priv *, struct rte_eth_dev *);
 int mlx5_set_link_down(struct rte_eth_dev *dev);
 int mlx5_set_link_up(struct rte_eth_dev *dev);
-struct priv *mlx5_secondary_data_setup(struct priv *priv);
 void priv_select_tx_function(struct priv *);
 void priv_select_rx_function(struct priv *);
 

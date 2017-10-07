@@ -171,6 +171,10 @@ enum index {
 	ITEM_GRE_PROTO,
 	ITEM_FUZZY,
 	ITEM_FUZZY_THRESH,
+	ITEM_GTP,
+	ITEM_GTP_TEID,
+	ITEM_GTPC,
+	ITEM_GTPU,
 
 	/* Validate/create actions. */
 	ACTIONS,
@@ -226,7 +230,7 @@ struct context {
 	int args_num; /**< Number of entries in args[]. */
 	uint32_t eol:1; /**< EOL has been detected. */
 	uint32_t last:1; /**< No more arguments. */
-	uint16_t port; /**< Current port ID (for completions). */
+	portid_t port; /**< Current port ID (for completions). */
 	uint32_t objdata; /**< Object-specific data. */
 	void *object; /**< Address of current object for relative offsets. */
 	void *objmask; /**< Object a full mask must be written to. */
@@ -346,7 +350,7 @@ struct token {
 /** Parser output buffer layout expected by cmd_flow_parsed(). */
 struct buffer {
 	enum index command; /**< Flow command. */
-	uint16_t port; /**< Affected port ID. */
+	portid_t port; /**< Affected port ID. */
 	union {
 		struct {
 			struct rte_flow_attr attr;
@@ -451,6 +455,9 @@ static const enum index next_item[] = {
 	ITEM_MPLS,
 	ITEM_GRE,
 	ITEM_FUZZY,
+	ITEM_GTP,
+	ITEM_GTPC,
+	ITEM_GTPU,
 	ZERO,
 };
 
@@ -584,6 +591,12 @@ static const enum index item_mpls[] = {
 
 static const enum index item_gre[] = {
 	ITEM_GRE_PROTO,
+	ITEM_NEXT,
+	ZERO,
+};
+
+static const enum index item_gtp[] = {
+	ITEM_GTP_TEID,
 	ITEM_NEXT,
 	ZERO,
 };
@@ -1420,6 +1433,33 @@ static const struct token token_list[] = {
 		.next = NEXT(item_fuzzy, NEXT_ENTRY(UNSIGNED), item_param),
 		.args = ARGS(ARGS_ENTRY(struct rte_flow_item_fuzzy,
 					thresh)),
+	},
+	[ITEM_GTP] = {
+		.name = "gtp",
+		.help = "match GTP header",
+		.priv = PRIV_ITEM(GTP, sizeof(struct rte_flow_item_gtp)),
+		.next = NEXT(item_gtp),
+		.call = parse_vc,
+	},
+	[ITEM_GTP_TEID] = {
+		.name = "teid",
+		.help = "tunnel endpoint identifier",
+		.next = NEXT(item_gtp, NEXT_ENTRY(UNSIGNED), item_param),
+		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_gtp, teid)),
+	},
+	[ITEM_GTPC] = {
+		.name = "gtpc",
+		.help = "match GTP header",
+		.priv = PRIV_ITEM(GTPC, sizeof(struct rte_flow_item_gtp)),
+		.next = NEXT(item_gtp),
+		.call = parse_vc,
+	},
+	[ITEM_GTPU] = {
+		.name = "gtpu",
+		.help = "match GTP header",
+		.priv = PRIV_ITEM(GTPU, sizeof(struct rte_flow_item_gtp)),
+		.next = NEXT(item_gtp),
+		.call = parse_vc,
 	},
 
 	/* Validate/create actions. */
@@ -2578,7 +2618,7 @@ comp_rule_id(struct context *ctx, const struct token *token,
 
 	(void)token;
 	if (port_id_is_invalid(ctx->port, DISABLED_WARN) ||
-	    ctx->port == (uint16_t)RTE_PORT_ALL)
+	    ctx->port == (portid_t)RTE_PORT_ALL)
 		return -1;
 	port = &ports[ctx->port];
 	for (pf = port->flow_list; pf != NULL; pf = pf->next) {

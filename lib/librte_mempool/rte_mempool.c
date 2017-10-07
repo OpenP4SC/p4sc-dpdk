@@ -238,9 +238,16 @@ rte_mempool_calc_obj_size(uint32_t elt_size, uint32_t flags,
  * Calculate maximum amount of memory required to store given number of objects.
  */
 size_t
-rte_mempool_xmem_size(uint32_t elt_num, size_t total_elt_sz, uint32_t pg_shift)
+rte_mempool_xmem_size(uint32_t elt_num, size_t total_elt_sz, uint32_t pg_shift,
+		      unsigned int flags)
 {
 	size_t obj_per_page, pg_num, pg_sz;
+	unsigned int mask;
+
+	mask = MEMPOOL_F_CAPA_BLK_ALIGNED_OBJECTS | MEMPOOL_F_CAPA_PHYS_CONTIG;
+	if ((flags & mask) == mask)
+		/* alignment need one additional object */
+		elt_num += 1;
 
 	if (total_elt_sz == 0)
 		return 0;
@@ -264,12 +271,18 @@ rte_mempool_xmem_size(uint32_t elt_num, size_t total_elt_sz, uint32_t pg_shift)
 ssize_t
 rte_mempool_xmem_usage(__rte_unused void *vaddr, uint32_t elt_num,
 	size_t total_elt_sz, const phys_addr_t paddr[], uint32_t pg_num,
-	uint32_t pg_shift)
+	uint32_t pg_shift, unsigned int flags)
 {
 	uint32_t elt_cnt = 0;
 	phys_addr_t start, end;
 	uint32_t paddr_idx;
 	size_t pg_sz = (size_t)1 << pg_shift;
+	unsigned int mask;
+
+	mask = MEMPOOL_F_CAPA_BLK_ALIGNED_OBJECTS | MEMPOOL_F_CAPA_PHYS_CONTIG;
+	if ((flags & mask) == mask)
+		/* alignment need one additional object */
+		elt_num += 1;
 
 	/* if paddr is NULL, assume contiguous memory */
 	if (paddr == NULL) {
@@ -354,6 +367,11 @@ rte_mempool_populate_phys(struct rte_mempool *mp, char *vaddr,
 	struct rte_mempool_memhdr *memhdr;
 	int ret;
 
+	/* Notify memory area to mempool */
+	ret = rte_mempool_ops_register_memory_area(mp, vaddr, paddr, len);
+	if (ret != -ENOTSUP && ret < 0)
+		return ret;
+
 	/* create the internal ring if not already done */
 	if ((mp->flags & MEMPOOL_F_POOL_CREATED) == 0) {
 		ret = rte_mempool_ops_alloc(mp);
@@ -368,6 +386,16 @@ rte_mempool_populate_phys(struct rte_mempool *mp, char *vaddr,
 
 	total_elt_sz = mp->header_size + mp->elt_size + mp->trailer_size;
 
+	/* Detect pool area has sufficient space for elements */
+	if (mp->flags & MEMPOOL_F_CAPA_PHYS_CONTIG) {
+		if (len < total_elt_sz * mp->size) {
+			RTE_LOG(ERR, MEMPOOL,
+				"pool area %" PRIx64 " not enough\n",
+				(uint64_t)len);
+			return -ENOSPC;
+		}
+	}
+
 	memhdr = rte_zmalloc("MEMPOOL_MEMHDR", sizeof(*memhdr), 0);
 	if (memhdr == NULL)
 		return -ENOMEM;
@@ -379,7 +407,10 @@ rte_mempool_populate_phys(struct rte_mempool *mp, char *vaddr,
 	memhdr->free_cb = free_cb;
 	memhdr->opaque = opaque;
 
-	if (mp->flags & MEMPOOL_F_NO_CACHE_ALIGN)
+	if (mp->flags & MEMPOOL_F_CAPA_BLK_ALIGNED_OBJECTS)
+		/* align object start address to a multiple of total_elt_sz */
+		off = total_elt_sz - ((uintptr_t)vaddr % total_elt_sz);
+	else if (mp->flags & MEMPOOL_F_NO_CACHE_ALIGN)
 		off = RTE_PTR_ALIGN_CEIL(vaddr, 8) - vaddr;
 	else
 		off = RTE_PTR_ALIGN_CEIL(vaddr, RTE_CACHE_LINE_SIZE) - vaddr;
@@ -515,17 +546,30 @@ rte_mempool_populate_virt(struct rte_mempool *mp, char *addr,
 int
 rte_mempool_populate_default(struct rte_mempool *mp)
 {
-	int mz_flags = RTE_MEMZONE_1GB|RTE_MEMZONE_SIZE_HINT_ONLY;
+	unsigned int mz_flags = RTE_MEMZONE_1GB|RTE_MEMZONE_SIZE_HINT_ONLY;
 	char mz_name[RTE_MEMZONE_NAMESIZE];
 	const struct rte_memzone *mz;
 	size_t size, total_elt_sz, align, pg_sz, pg_shift;
 	phys_addr_t paddr;
 	unsigned mz_id, n;
+	unsigned int mp_flags;
 	int ret;
 
 	/* mempool must not be populated */
 	if (mp->nb_mem_chunks != 0)
 		return -EEXIST;
+
+	/* Get mempool capabilities */
+	mp_flags = 0;
+	ret = rte_mempool_ops_get_capabilities(mp, &mp_flags);
+	if (ret == -ENOTSUP)
+		RTE_LOG(DEBUG, MEMPOOL, "get_capability not supported for %s\n",
+					mp->name);
+	else if (ret < 0)
+		return ret;
+
+	/* update mempool capabilities */
+	mp->flags |= mp_flags;
 
 	if (rte_xen_dom0_supported()) {
 		pg_sz = RTE_PGSIZE_2M;
@@ -543,7 +587,8 @@ rte_mempool_populate_default(struct rte_mempool *mp)
 
 	total_elt_sz = mp->header_size + mp->elt_size + mp->trailer_size;
 	for (mz_id = 0, n = mp->size; n > 0; mz_id++, n -= ret) {
-		size = rte_mempool_xmem_size(n, total_elt_sz, pg_shift);
+		size = rte_mempool_xmem_size(n, total_elt_sz, pg_shift,
+						mp->flags);
 
 		ret = snprintf(mz_name, sizeof(mz_name),
 			RTE_MEMPOOL_MZ_FORMAT "_%d", mp->name, mz_id);
@@ -600,7 +645,8 @@ get_anon_size(const struct rte_mempool *mp)
 	pg_sz = getpagesize();
 	pg_shift = rte_bsf32(pg_sz);
 	total_elt_sz = mp->header_size + mp->elt_size + mp->trailer_size;
-	size = rte_mempool_xmem_size(mp->size, total_elt_sz, pg_shift);
+	size = rte_mempool_xmem_size(mp->size, total_elt_sz, pg_shift,
+					mp->flags);
 
 	return size;
 }
@@ -742,7 +788,7 @@ rte_mempool_create_empty(const char *name, unsigned n, unsigned elt_size,
 	struct rte_tailq_entry *te = NULL;
 	const struct rte_memzone *mz = NULL;
 	size_t mempool_size;
-	int mz_flags = RTE_MEMZONE_1GB|RTE_MEMZONE_SIZE_HINT_ONLY;
+	unsigned int mz_flags = RTE_MEMZONE_1GB|RTE_MEMZONE_SIZE_HINT_ONLY;
 	struct rte_mempool_objsz objsz;
 	unsigned lcore_id;
 	int ret;

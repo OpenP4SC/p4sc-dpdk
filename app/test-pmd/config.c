@@ -203,8 +203,10 @@ nic_stats_display(portid_t port_id)
 	if (diff_cycles > 0)
 		diff_cycles = prev_cycles[port_id] - diff_cycles;
 
-	diff_pkts_rx = stats.ipackets - prev_pkts_rx[port_id];
-	diff_pkts_tx = stats.opackets - prev_pkts_tx[port_id];
+	diff_pkts_rx = (stats.ipackets > prev_pkts_rx[port_id]) ?
+		(stats.ipackets - prev_pkts_rx[port_id]) : 0;
+	diff_pkts_tx = (stats.opackets > prev_pkts_tx[port_id]) ?
+		(stats.opackets - prev_pkts_tx[port_id]) : 0;
 	prev_pkts_rx[port_id] = stats.ipackets;
 	prev_pkts_tx[port_id] = stats.opackets;
 	mpps_rx = diff_cycles > 0 ?
@@ -358,7 +360,7 @@ rx_queue_infos_display(portid_t port_id, uint16_t queue_id)
 
 	rc = rte_eth_rx_queue_info_get(port_id, queue_id, &qinfo);
 	if (rc != 0) {
-		printf("Failed to retrieve information for port: %hhu, "
+		printf("Failed to retrieve information for port: %u, "
 			"RX queue: %hu\nerror desc: %s(%d)\n",
 			port_id, queue_id, strerror(-rc), rc);
 		return;
@@ -391,7 +393,7 @@ tx_queue_infos_display(portid_t port_id, uint16_t queue_id)
 
 	rc = rte_eth_tx_queue_info_get(port_id, queue_id, &qinfo);
 	if (rc != 0) {
-		printf("Failed to retrieve information for port: %hhu, "
+		printf("Failed to retrieve information for port: %u, "
 			"TX queue: %hu\nerror desc: %s(%d)\n",
 			port_id, queue_id, strerror(-rc), rc);
 		return;
@@ -498,12 +500,15 @@ port_infos_display(portid_t port_id)
 		char *p;
 
 		printf("Supported flow types:\n");
-		for (i = RTE_ETH_FLOW_UNKNOWN + 1; i < RTE_ETH_FLOW_MAX;
-								i++) {
+		for (i = RTE_ETH_FLOW_UNKNOWN + 1;
+		     i < sizeof(dev_info.flow_type_rss_offloads) * CHAR_BIT; i++) {
 			if (!(dev_info.flow_type_rss_offloads & (1ULL << i)))
 				continue;
 			p = flowtype_to_str(i);
-			printf("  %s\n", (p ? p : "unknown"));
+			if (p)
+				printf("  %s\n", p);
+			else
+				printf("  user defined %d\n", i);
 		}
 	}
 
@@ -947,6 +952,9 @@ static const struct {
 	MK_FLOW_ITEM(MPLS, sizeof(struct rte_flow_item_mpls)),
 	MK_FLOW_ITEM(GRE, sizeof(struct rte_flow_item_gre)),
 	MK_FLOW_ITEM(FUZZY, sizeof(struct rte_flow_item_fuzzy)),
+	MK_FLOW_ITEM(GTP, sizeof(struct rte_flow_item_gtp)),
+	MK_FLOW_ITEM(GTPC, sizeof(struct rte_flow_item_gtp)),
+	MK_FLOW_ITEM(GTPU, sizeof(struct rte_flow_item_gtp)),
 };
 
 /** Compute storage space needed by item specification. */
@@ -3004,7 +3012,7 @@ fdir_set_flex_mask(portid_t port_id, struct rte_eth_fdir_flex_mask *cfg)
 			return;
 		}
 	}
-	(void)rte_memcpy(&flex_conf->flex_mask[idx],
+	rte_memcpy(&flex_conf->flex_mask[idx],
 			 cfg,
 			 sizeof(struct rte_eth_fdir_flex_mask));
 }
@@ -3034,7 +3042,7 @@ fdir_set_flex_payload(portid_t port_id, struct rte_eth_flex_payload_cfg *cfg)
 			return;
 		}
 	}
-	(void)rte_memcpy(&flex_conf->flex_set[idx],
+	rte_memcpy(&flex_conf->flex_set[idx],
 			 cfg,
 			 sizeof(struct rte_eth_flex_payload_cfg));
 

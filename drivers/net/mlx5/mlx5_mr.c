@@ -41,14 +41,7 @@
 #pragma GCC diagnostic error "-Wpedantic"
 #endif
 
-/* DPDK headers don't like -pedantic. */
-#ifdef PEDANTIC
-#pragma GCC diagnostic ignored "-Wpedantic"
-#endif
 #include <rte_mempool.h>
-#ifdef PEDANTIC
-#pragma GCC diagnostic error "-Wpedantic"
-#endif
 
 #include "mlx5.h"
 #include "mlx5_rxtx.h"
@@ -210,7 +203,7 @@ txq_mp2mr_reg(struct txq *txq, struct rte_mempool *mp, unsigned int idx)
 	txq_ctrl->txq.mp2mr[idx].start = (uintptr_t)mr->addr;
 	txq_ctrl->txq.mp2mr[idx].end = (uintptr_t)mr->addr + mr->length;
 	txq_ctrl->txq.mp2mr[idx].mr = mr;
-	txq_ctrl->txq.mp2mr[idx].lkey = htonl(mr->lkey);
+	txq_ctrl->txq.mp2mr[idx].lkey = rte_cpu_to_be_32(mr->lkey);
 	DEBUG("%p: new MR lkey for MP \"%s\" (%p): 0x%08" PRIu32,
 	      (void *)txq_ctrl, mp->name, (void *)mp,
 	      txq_ctrl->txq.mp2mr[idx].lkey);

@@ -40,7 +40,6 @@
 
 #include "ark_global.h"
 #include "ark_logs.h"
-#include "ark_ethdev.h"
 #include "ark_ethdev_tx.h"
 #include "ark_ethdev_rx.h"
 #include "ark_mpu.h"
@@ -452,10 +451,16 @@ ark_config_device(struct rte_eth_dev *dev)
 	 */
 	ark->start_pg = 0;
 	ark->pg = ark_pktgen_init(ark->pktgen.v, 0, 1);
+	if (ark->pg == NULL)
+		return -1;
 	ark_pktgen_reset(ark->pg);
 	ark->pc = ark_pktchkr_init(ark->pktchkr.v, 0, 1);
+	if (ark->pc == NULL)
+		return -1;
 	ark_pktchkr_stop(ark->pc);
 	ark->pd = ark_pktdir_init(ark->pktdir.v);
+	if (ark->pd == NULL)
+		return -1;
 
 	/* Verify HW */
 	if (ark_udm_verify(ark->udm.v))
@@ -641,7 +646,7 @@ eth_ark_dev_stop(struct rte_eth_dev *dev)
 	for (i = 0; i < dev->data->nb_tx_queues; i++) {
 		status = eth_ark_tx_queue_stop(dev, i);
 		if (status != 0) {
-			uint8_t port = dev->data->port_id;
+			uint16_t port = dev->data->port_id;
 			PMD_DRV_LOG(ERR,
 				    "tx_queue stop anomaly"
 				    " port %u, queue %u\n",

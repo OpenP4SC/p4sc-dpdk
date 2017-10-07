@@ -43,22 +43,14 @@
 #pragma GCC diagnostic ignored "-Wpedantic"
 #endif
 #include <infiniband/verbs.h>
-#include <infiniband/mlx5_hw.h>
-#include <infiniband/arch.h>
+#include <infiniband/mlx5dv.h>
 #ifdef PEDANTIC
 #pragma GCC diagnostic error "-Wpedantic"
 #endif
 
-/* DPDK headers don't like -pedantic. */
-#ifdef PEDANTIC
-#pragma GCC diagnostic ignored "-Wpedantic"
-#endif
 #include <rte_mbuf.h>
 #include <rte_mempool.h>
 #include <rte_prefetch.h>
-#ifdef PEDANTIC
-#pragma GCC diagnostic error "-Wpedantic"
-#endif
 
 #include "mlx5.h"
 #include "mlx5_utils.h"
@@ -119,8 +111,7 @@ txq_wr_dseg_v(struct txq *txq, __m128i *dseg,
 }
 
 /**
- * Count the number of continuous single segment packets. The first packet must
- * be a single segment packet.
+ * Count the number of continuous single segment packets.
  *
  * @param pkts
  *   Pointer to array of packets.
@@ -137,9 +128,8 @@ txq_check_multiseg(struct rte_mbuf **pkts, uint16_t pkts_n)
 
 	if (!pkts_n)
 		return 0;
-	assert(NB_SEGS(pkts[0]) == 1);
 	/* Count the number of continuous single segment packets. */
-	for (pos = 1; pos < pkts_n; ++pos)
+	for (pos = 0; pos < pkts_n; ++pos)
 		if (NB_SEGS(pkts[pos]) > 1)
 			break;
 	return pos;
@@ -257,6 +247,10 @@ txq_scatter_v(struct txq *txq, struct rte_mbuf **pkts, uint16_t pkts_n)
 		if (segs_n == 1 ||
 		    max_elts < segs_n || max_wqe < 2)
 			break;
+		if (segs_n > MLX5_MPW_DSEG_MAX) {
+			txq->stats.oerrors++;
+			break;
+		}
 		wqe = &((volatile struct mlx5_wqe64 *)
 			 txq->wqes)[wqe_ci & wq_mask].hdr;
 		if (buf->ol_flags &
@@ -298,7 +292,7 @@ txq_scatter_v(struct txq *txq, struct rte_mbuf **pkts, uint16_t pkts_n)
 		/* Fill ESEG in the header. */
 		_mm_store_si128(t_wqe + 1,
 				_mm_set_epi16(0, 0, 0, 0,
-					      htons(len), cs_flags,
+					      rte_cpu_to_be_16(len), cs_flags,
 					      0, 0));
 		txq->wqe_ci = wqe_ci;
 	}
@@ -307,7 +301,7 @@ txq_scatter_v(struct txq *txq, struct rte_mbuf **pkts, uint16_t pkts_n)
 	txq->elts_comp += (uint16_t)(elts_head - txq->elts_head);
 	txq->elts_head = elts_head;
 	if (txq->elts_comp >= MLX5_TX_COMP_THRESH) {
-		wqe->ctrl[2] = htonl(8);
+		wqe->ctrl[2] = rte_cpu_to_be_32(8);
 		wqe->ctrl[3] = txq->elts_head;
 		txq->elts_comp = 0;
 		++txq->cq_pi;
@@ -374,6 +368,7 @@ txq_burst_v(struct txq *txq, struct rte_mbuf **pkts, uint16_t pkts_n,
 	max_elts = (elts_n - (elts_head - txq->elts_tail));
 	max_wqe = (1u << txq->wqe_n) - (txq->wqe_ci - txq->wqe_pi);
 	pkts_n = RTE_MIN((unsigned int)RTE_MIN(pkts_n, max_wqe), max_elts);
+	assert(pkts_n <= MLX5_DSEG_MAX - nb_dword_in_hdr);
 	if (unlikely(!pkts_n))
 		return 0;
 	elts = &(*txq->elts)[elts_head & elts_m];
@@ -568,11 +563,11 @@ rxq_replenish_bulk_mbuf(struct rxq *rxq, uint16_t n)
 		return;
 	}
 	for (i = 0; i < n; ++i)
-		wq[i].addr = htonll((uintptr_t)elts[i]->buf_addr +
-				    RTE_PKTMBUF_HEADROOM);
+		wq[i].addr = rte_cpu_to_be_64((uintptr_t)elts[i]->buf_addr +
+					      RTE_PKTMBUF_HEADROOM);
 	rxq->rq_ci += n;
 	rte_wmb();
-	*rxq->rq_db = htonl(rxq->rq_ci);
+	*rxq->rq_db = rte_cpu_to_be_32(rxq->rq_ci);
 }
 
 /**
@@ -643,6 +638,13 @@ rxq_cq_decompress_v(struct rxq *rxq,
 			 offsetof(struct rte_mbuf, rx_descriptor_fields1) + 8);
 	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, hash) !=
 			 offsetof(struct rte_mbuf, rx_descriptor_fields1) + 12);
+	/*
+	 * Not to overflow elts array. Decompress next time after mbuf
+	 * replenishment.
+	 */
+	if (unlikely(mcqe_n + MLX5_VPMD_DESCS_PER_LOOP >
+		     (uint16_t)(rxq->rq_ci - rxq->cq_ci)))
+		return;
 	/*
 	 * A. load mCQEs into a 128bit register.
 	 * B. store rearm data to mbuf.
@@ -1033,8 +1035,10 @@ rxq_burst_v(struct rxq *rxq, struct rte_mbuf **pkts, uint16_t pkts_n)
 	}
 	elts_idx = rxq->rq_pi & q_mask;
 	elts = &(*rxq->elts)[elts_idx];
-	/* Not to overflow pkts array. */
-	pkts_n = RTE_ALIGN_FLOOR(pkts_n - rcvd_pkt, MLX5_VPMD_DESCS_PER_LOOP);
+	pkts_n = RTE_MIN(pkts_n - rcvd_pkt,
+			 (uint16_t)(rxq->rq_ci - rxq->cq_ci));
+	/* Not to overflow pkts/elts array. */
+	pkts_n = RTE_ALIGN_FLOOR(pkts_n, MLX5_VPMD_DESCS_PER_LOOP);
 	/* Not to cross queue end. */
 	pkts_n = RTE_MIN(pkts_n, q_n - elts_idx);
 	if (!pkts_n)
@@ -1255,7 +1259,7 @@ rxq_burst_v(struct rxq *rxq, struct rte_mbuf **pkts, uint16_t pkts_n)
 		}
 	}
 	rte_wmb();
-	*rxq->cq_db = htonl(rxq->cq_ci);
+	*rxq->cq_db = rte_cpu_to_be_32(rxq->cq_ci);
 	return rcvd_pkt;
 }
 
@@ -1376,42 +1380,4 @@ priv_check_vec_rx_support(struct priv *priv)
 	if (i != priv->rxqs_n)
 		return -ENOTSUP;
 	return 1;
-}
-
-/**
- * Prepare for vectorized RX.
- *
- * @param priv
- *   Pointer to private structure.
- */
-void
-priv_prep_vec_rx_function(struct priv *priv)
-{
-	uint16_t i;
-
-	for (i = 0; i < priv->rxqs_n; ++i) {
-		struct rxq *rxq = (*priv->rxqs)[i];
-		struct rte_mbuf *mbuf_init = &rxq->fake_mbuf;
-		const uint16_t desc = 1 << rxq->elts_n;
-		int j;
-
-		assert(rxq->elts_n == rxq->cqe_n);
-		/* Initialize default rearm_data for vPMD. */
-		mbuf_init->data_off = RTE_PKTMBUF_HEADROOM;
-		rte_mbuf_refcnt_set(mbuf_init, 1);
-		mbuf_init->nb_segs = 1;
-		mbuf_init->port = rxq->port_id;
-		/*
-		 * prevent compiler reordering:
-		 * rearm_data covers previous fields.
-		 */
-		rte_compiler_barrier();
-		rxq->mbuf_initializer =
-			*(uint64_t *)&mbuf_init->rearm_data;
-		/* Padding with a fake mbuf for vectorized Rx. */
-		for (j = 0; j < MLX5_VPMD_DESCS_PER_LOOP; ++j)
-			(*rxq->elts)[desc + j] = &rxq->fake_mbuf;
-		/* Mark that it need to be cleaned up for rxq_alloc_elts(). */
-		rxq->trim_elts = 1;
-	}
 }

@@ -1734,36 +1734,42 @@ i40e_dev_rx_queue_setup(struct rte_eth_dev *dev,
 			const struct rte_eth_rxconf *rx_conf,
 			struct rte_mempool *mp)
 {
-	struct i40e_vsi *vsi;
 	struct i40e_hw *hw = I40E_DEV_PRIVATE_TO_HW(dev->data->dev_private);
-	struct i40e_pf *pf = I40E_DEV_PRIVATE_TO_PF(dev->data->dev_private);
 	struct i40e_adapter *ad =
 		I40E_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
+	struct i40e_vsi *vsi;
+	struct i40e_pf *pf = NULL;
+	struct i40e_vf *vf = NULL;
 	struct i40e_rx_queue *rxq;
 	const struct rte_memzone *rz;
 	uint32_t ring_size;
 	uint16_t len, i;
-	uint16_t base, bsf, tc_mapping;
-	int use_def_burst_func = 1;
+	uint16_t reg_idx, base, bsf, tc_mapping;
+	int q_offset, use_def_burst_func = 1;
 
 	if (hw->mac.type == I40E_MAC_VF || hw->mac.type == I40E_MAC_X722_VF) {
-		struct i40e_vf *vf =
-			I40EVF_DEV_PRIVATE_TO_VF(dev->data->dev_private);
+		vf = I40EVF_DEV_PRIVATE_TO_VF(dev->data->dev_private);
 		vsi = &vf->vsi;
-	} else
+		if (!vsi)
+			return -EINVAL;
+		reg_idx = queue_idx;
+	} else {
+		pf = I40E_DEV_PRIVATE_TO_PF(dev->data->dev_private);
 		vsi = i40e_pf_get_vsi_by_qindex(pf, queue_idx);
-
-	if (vsi == NULL) {
-		PMD_DRV_LOG(ERR, "VSI not available or queue "
-			    "index exceeds the maximum");
-		return I40E_ERR_PARAM;
+		if (!vsi)
+			return -EINVAL;
+		q_offset = i40e_get_queue_offset_by_qindex(pf, queue_idx);
+		if (q_offset < 0)
+			return -EINVAL;
+		reg_idx = vsi->base_queue + q_offset;
 	}
+
 	if (nb_desc % I40E_ALIGN_RING_DESC != 0 ||
-			(nb_desc > I40E_MAX_RING_DESC) ||
-			(nb_desc < I40E_MIN_RING_DESC)) {
+	    (nb_desc > I40E_MAX_RING_DESC) ||
+	    (nb_desc < I40E_MIN_RING_DESC)) {
 		PMD_DRV_LOG(ERR, "Number (%u) of receive descriptors is "
 			    "invalid", nb_desc);
-		return I40E_ERR_PARAM;
+		return -EINVAL;
 	}
 
 	/* Free memory if needed */
@@ -1786,12 +1792,7 @@ i40e_dev_rx_queue_setup(struct rte_eth_dev *dev,
 	rxq->nb_rx_desc = nb_desc;
 	rxq->rx_free_thresh = rx_conf->rx_free_thresh;
 	rxq->queue_id = queue_idx;
-	if (hw->mac.type == I40E_MAC_VF || hw->mac.type == I40E_MAC_X722_VF)
-		rxq->reg_idx = queue_idx;
-	else /* PF device */
-		rxq->reg_idx = vsi->base_queue +
-			i40e_get_queue_offset_by_qindex(pf, queue_idx);
-
+	rxq->reg_idx = reg_idx;
 	rxq->port_id = dev->data->port_id;
 	rxq->crc_len = (uint8_t) ((dev->data->dev_conf.rxmode.hw_strip_crc) ?
 							0 : ETHER_CRC_LEN);
@@ -2012,34 +2013,40 @@ i40e_dev_tx_queue_setup(struct rte_eth_dev *dev,
 			unsigned int socket_id,
 			const struct rte_eth_txconf *tx_conf)
 {
-	struct i40e_vsi *vsi;
 	struct i40e_hw *hw = I40E_DEV_PRIVATE_TO_HW(dev->data->dev_private);
-	struct i40e_pf *pf = I40E_DEV_PRIVATE_TO_PF(dev->data->dev_private);
+	struct i40e_vsi *vsi;
+	struct i40e_pf *pf = NULL;
+	struct i40e_vf *vf = NULL;
 	struct i40e_tx_queue *txq;
 	const struct rte_memzone *tz;
 	uint32_t ring_size;
 	uint16_t tx_rs_thresh, tx_free_thresh;
-	uint16_t i, base, bsf, tc_mapping;
+	uint16_t reg_idx, i, base, bsf, tc_mapping;
+	int q_offset;
 
 	if (hw->mac.type == I40E_MAC_VF || hw->mac.type == I40E_MAC_X722_VF) {
-		struct i40e_vf *vf =
-			I40EVF_DEV_PRIVATE_TO_VF(dev->data->dev_private);
+		vf = I40EVF_DEV_PRIVATE_TO_VF(dev->data->dev_private);
 		vsi = &vf->vsi;
-	} else
+		if (!vsi)
+			return -EINVAL;
+		reg_idx = queue_idx;
+	} else {
+		pf = I40E_DEV_PRIVATE_TO_PF(dev->data->dev_private);
 		vsi = i40e_pf_get_vsi_by_qindex(pf, queue_idx);
-
-	if (vsi == NULL) {
-		PMD_DRV_LOG(ERR, "VSI is NULL, or queue index (%u) "
-			    "exceeds the maximum", queue_idx);
-		return I40E_ERR_PARAM;
+		if (!vsi)
+			return -EINVAL;
+		q_offset = i40e_get_queue_offset_by_qindex(pf, queue_idx);
+		if (q_offset < 0)
+			return -EINVAL;
+		reg_idx = vsi->base_queue + q_offset;
 	}
 
 	if (nb_desc % I40E_ALIGN_RING_DESC != 0 ||
-			(nb_desc > I40E_MAX_RING_DESC) ||
-			(nb_desc < I40E_MIN_RING_DESC)) {
+	    (nb_desc > I40E_MAX_RING_DESC) ||
+	    (nb_desc < I40E_MIN_RING_DESC)) {
 		PMD_DRV_LOG(ERR, "Number (%u) of transmit descriptors is "
 			    "invalid", nb_desc);
-		return I40E_ERR_PARAM;
+		return -EINVAL;
 	}
 
 	/**
@@ -2148,12 +2155,7 @@ i40e_dev_tx_queue_setup(struct rte_eth_dev *dev,
 	txq->hthresh = tx_conf->tx_thresh.hthresh;
 	txq->wthresh = tx_conf->tx_thresh.wthresh;
 	txq->queue_id = queue_idx;
-	if (hw->mac.type == I40E_MAC_VF || hw->mac.type == I40E_MAC_X722_VF)
-		txq->reg_idx = queue_idx;
-	else /* PF device */
-		txq->reg_idx = vsi->base_queue +
-			i40e_get_queue_offset_by_qindex(pf, queue_idx);
-
+	txq->reg_idx = reg_idx;
 	txq->port_id = dev->data->port_id;
 	txq->txq_flags = tx_conf->txq_flags;
 	txq->vsi = vsi;
@@ -2939,6 +2941,64 @@ i40e_set_default_ptype_table(struct rte_eth_dev *dev)
 
 	for (i = 0; i < I40E_MAX_PKT_TYPE; i++)
 		ad->ptype_tbl[i] = i40e_get_default_pkt_type(i);
+}
+
+void __attribute__((cold))
+i40e_set_default_pctype_table(struct rte_eth_dev *dev)
+{
+	struct i40e_adapter *ad =
+			I40E_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
+	struct i40e_hw *hw = I40E_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	int i;
+
+	for (i = 0; i < I40E_FLOW_TYPE_MAX; i++)
+		ad->pctypes_tbl[i] = 0ULL;
+	ad->flow_types_mask = 0ULL;
+	ad->pctypes_mask = 0ULL;
+
+	ad->pctypes_tbl[RTE_ETH_FLOW_FRAG_IPV4] =
+				(1ULL << I40E_FILTER_PCTYPE_FRAG_IPV4);
+	ad->pctypes_tbl[RTE_ETH_FLOW_NONFRAG_IPV4_UDP] =
+				(1ULL << I40E_FILTER_PCTYPE_NONF_IPV4_UDP);
+	ad->pctypes_tbl[RTE_ETH_FLOW_NONFRAG_IPV4_TCP] =
+				(1ULL << I40E_FILTER_PCTYPE_NONF_IPV4_TCP);
+	ad->pctypes_tbl[RTE_ETH_FLOW_NONFRAG_IPV4_SCTP] =
+				(1ULL << I40E_FILTER_PCTYPE_NONF_IPV4_SCTP);
+	ad->pctypes_tbl[RTE_ETH_FLOW_NONFRAG_IPV4_OTHER] =
+				(1ULL << I40E_FILTER_PCTYPE_NONF_IPV4_OTHER);
+	ad->pctypes_tbl[RTE_ETH_FLOW_FRAG_IPV6] =
+				(1ULL << I40E_FILTER_PCTYPE_FRAG_IPV6);
+	ad->pctypes_tbl[RTE_ETH_FLOW_NONFRAG_IPV6_UDP] =
+				(1ULL << I40E_FILTER_PCTYPE_NONF_IPV6_UDP);
+	ad->pctypes_tbl[RTE_ETH_FLOW_NONFRAG_IPV6_TCP] =
+				(1ULL << I40E_FILTER_PCTYPE_NONF_IPV6_TCP);
+	ad->pctypes_tbl[RTE_ETH_FLOW_NONFRAG_IPV6_SCTP] =
+				(1ULL << I40E_FILTER_PCTYPE_NONF_IPV6_SCTP);
+	ad->pctypes_tbl[RTE_ETH_FLOW_NONFRAG_IPV6_OTHER] =
+				(1ULL << I40E_FILTER_PCTYPE_NONF_IPV6_OTHER);
+	ad->pctypes_tbl[RTE_ETH_FLOW_L2_PAYLOAD] =
+				(1ULL << I40E_FILTER_PCTYPE_L2_PAYLOAD);
+
+	if (hw->mac.type == I40E_MAC_X722) {
+		ad->pctypes_tbl[RTE_ETH_FLOW_NONFRAG_IPV4_UDP] |=
+			(1ULL << I40E_FILTER_PCTYPE_NONF_UNICAST_IPV4_UDP);
+		ad->pctypes_tbl[RTE_ETH_FLOW_NONFRAG_IPV4_UDP] |=
+			(1ULL << I40E_FILTER_PCTYPE_NONF_MULTICAST_IPV4_UDP);
+		ad->pctypes_tbl[RTE_ETH_FLOW_NONFRAG_IPV4_TCP] |=
+			(1ULL << I40E_FILTER_PCTYPE_NONF_IPV4_TCP_SYN_NO_ACK);
+		ad->pctypes_tbl[RTE_ETH_FLOW_NONFRAG_IPV6_UDP] |=
+			(1ULL << I40E_FILTER_PCTYPE_NONF_UNICAST_IPV6_UDP);
+		ad->pctypes_tbl[RTE_ETH_FLOW_NONFRAG_IPV6_UDP] |=
+			(1ULL << I40E_FILTER_PCTYPE_NONF_MULTICAST_IPV6_UDP);
+		ad->pctypes_tbl[RTE_ETH_FLOW_NONFRAG_IPV6_TCP] |=
+			(1ULL << I40E_FILTER_PCTYPE_NONF_IPV6_TCP_SYN_NO_ACK);
+	}
+
+	for (i = 0; i < I40E_FLOW_TYPE_MAX; i++) {
+		if (ad->pctypes_tbl[i])
+			ad->flow_types_mask |= (1ULL << i);
+		ad->pctypes_mask |= ad->pctypes_tbl[i];
+	}
 }
 
 /* Stubs needed for linkage when CONFIG_RTE_I40E_INC_VECTOR is set to 'n' */

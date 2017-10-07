@@ -98,7 +98,7 @@ dpaa2_create_dpbp_device(int vdev_fd __rte_unused,
 
 	TAILQ_INSERT_TAIL(&dpbp_dev_list, dpbp_node, next);
 
-	PMD_INIT_LOG(DEBUG, "DPAA2: Added [dpbp.%d]", dpbp_id);
+	RTE_LOG(DEBUG, PMD, "DPAA2: Added [dpbp.%d]\n", dpbp_id);
 
 	return 0;
 }
@@ -127,6 +127,13 @@ void dpaa2_free_dpbp_dev(struct dpaa2_dpbp_dev *dpbp)
 			return;
 		}
 	}
+}
+
+int dpaa2_dpbp_supported(void)
+{
+	if (TAILQ_EMPTY(&dpbp_dev_list))
+		return -1;
+	return 0;
 }
 
 static struct rte_dpaa2_object rte_dpaa2_dpbp_obj = {

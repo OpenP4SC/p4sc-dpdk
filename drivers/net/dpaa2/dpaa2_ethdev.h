@@ -61,6 +61,7 @@
  * currently considering 32 KB packets
  */
 #define CONG_THRESHOLD_RX_Q  (64 * 1024)
+#define CONG_RX_OAL	128
 
 /* Size of the input SMMU mapped memory required by MC */
 #define DIST_PARAM_IOVA_SIZE 256
@@ -92,7 +93,7 @@ struct dpaa2_dev_priv {
 };
 
 int dpaa2_setup_flow_dist(struct rte_eth_dev *eth_dev,
-			  uint32_t req_dist_set);
+			  uint64_t req_dist_set);
 
 int dpaa2_remove_flow_dist(struct rte_eth_dev *eth_dev,
 			   uint8_t tc_index);

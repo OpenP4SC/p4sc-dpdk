@@ -51,6 +51,7 @@
 #define SVR_LS1080A             0x87030000
 #define SVR_LS2080A             0x87010000
 #define SVR_LS2088A             0x87090000
+#define SVR_LX2160A             0x87360000
 
 #ifndef ETH_VLAN_HLEN
 #define ETH_VLAN_HLEN   4 /** < Vlan Header Length */
@@ -365,6 +366,7 @@ void set_swp_active_dqs(uint16_t dpio_index, struct qbman_result *dqs)
 }
 struct dpaa2_dpbp_dev *dpaa2_alloc_dpbp_dev(void);
 void dpaa2_free_dpbp_dev(struct dpaa2_dpbp_dev *dpbp);
+int dpaa2_dpbp_supported(void);
 
 struct dpaa2_dpci_dev *rte_dpaa2_alloc_dpci_dev(void);
 void rte_dpaa2_free_dpci_dev(struct dpaa2_dpci_dev *dpci);

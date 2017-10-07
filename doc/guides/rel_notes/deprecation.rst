@@ -44,15 +44,6 @@ Deprecation Notices
   PKT_RX_QINQ_STRIPPED, that are better described. The old flags and
   their behavior will be kept until 17.08 and will be removed in 17.11.
 
-* mempool: The following will be modified in 17.11:
-
-  - ``rte_mempool_xmem_size`` and ``rte_mempool_xmem_usage`` need to know
-    the mempool flag status so adding new param rte_mempool in those API.
-  - Removing __rte_unused int flag param from ``rte_mempool_generic_put``
-    and ``rte_mempool_generic_get`` API.
-  - ``rte_mempool`` flags data type will changed from int to
-    unsigned int.
-
 * ethdev: Tx offloads will no longer be enabled by default in 17.11.
   Instead, the ``rte_eth_txmode`` structure will be extended with
   bit field to enable each Tx offload.
@@ -75,12 +66,6 @@ Deprecation Notices
   by checking that the ``unplug`` ops is set in the bus. This verification is
   done by the EAL and not by the ``ethdev`` layer anymore. Users relying on this
   flag being present only have to remove their checks to follow the change.
-
-* ABI/API changes are planned for 17.11 in all structures which include port_id
-  definition such as "rte_eth_dev_data", "rte_port_ethdev_reader_params",
-  "rte_port_ethdev_writer_params", and so on. The definition of port_id will be
-  changed from 8 bits to 16 bits in order to support more than 256 ports in
-  DPDK. All APIs which have port_id parameter will be changed at the same time.
 
 * ethdev: An ABI change is planned for 17.11 for the structure rte_eth_dev_data.
   The size of the unique name will increase RTE_ETH_NAME_MAX_LEN from 32 to

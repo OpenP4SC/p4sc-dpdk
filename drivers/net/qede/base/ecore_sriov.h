@@ -16,7 +16,7 @@
 #include "ecore_l2.h"
 
 #define ECORE_ETH_MAX_VF_NUM_VLAN_FILTERS \
-	(E4_MAX_NUM_VFS * ECORE_ETH_VF_NUM_VLAN_FILTERS)
+	(MAX_NUM_VFS_E4 * ECORE_ETH_VF_NUM_VLAN_FILTERS)
 
 /* Represents a full message. Both the request filled by VF
  * and the response filled by the PF. The VF needs one copy
@@ -45,6 +45,9 @@ struct ecore_iov_vf_mbx {
 	/* Address in VF where a pending message is located */
 	dma_addr_t		pending_req;
 
+	/* Message from VF awaits handling */
+	bool			b_pending_msg;
+
 	u8 *offset;
 
 #ifdef CONFIG_ECORE_SW_CHANNEL
@@ -62,6 +65,10 @@ struct ecore_iov_vf_mbx {
 					 * more then one pending msg
 					 */
 };
+
+#define ECORE_IOV_LEGACY_QID_RX (0)
+#define ECORE_IOV_LEGACY_QID_TX (1)
+#define ECORE_IOV_QID_INVALID (0xFE)
 
 struct ecore_vf_queue_cid {
 	bool b_is_tx;
@@ -129,6 +136,9 @@ struct ecore_vf_info {
 	u8			num_rxqs;
 	u8			num_txqs;
 
+	u16			rx_coal;
+	u16			tx_coal;
+
 	u8			num_sbs;
 
 	u8			num_mac_filters;
@@ -160,8 +170,7 @@ struct ecore_vf_info {
  * capability enabled.
  */
 struct ecore_pf_iov {
-	struct ecore_vf_info	vfs_array[E4_MAX_NUM_VFS];
-	u64			pending_events[ECORE_VF_ARRAY_LENGTH];
+	struct ecore_vf_info	vfs_array[MAX_NUM_VFS_E4];
 	u64			pending_flr[ECORE_VF_ARRAY_LENGTH];
 
 #ifndef REMOVE_DBG
@@ -197,17 +206,13 @@ enum _ecore_status_t ecore_iov_hw_info(struct ecore_hwfn *p_hwfn);
 /**
  * @brief ecore_add_tlv - place a given tlv on the tlv buffer at next offset
  *
- * @param p_hwfn
- * @param p_iov
+ * @param offset
  * @param type
  * @param length
  *
  * @return pointer to the newly placed tlv
  */
-void *ecore_add_tlv(struct ecore_hwfn	*p_hwfn,
-		    u8			**offset,
-		    u16			type,
-		    u16			length);
+void *ecore_add_tlv(u8 **offset, u16 type, u16 length);
 
 /**
  * @brief list the types and lengths of the tlvs on the buffer
@@ -231,10 +236,8 @@ enum _ecore_status_t ecore_iov_alloc(struct ecore_hwfn *p_hwfn);
  * @brief ecore_iov_setup - setup sriov related resources
  *
  * @param p_hwfn
- * @param p_ptt
  */
-void ecore_iov_setup(struct ecore_hwfn	*p_hwfn,
-		     struct ecore_ptt	*p_ptt);
+void ecore_iov_setup(struct ecore_hwfn	*p_hwfn);
 
 /**
  * @brief ecore_iov_free - free sriov related resources
@@ -249,32 +252,6 @@ void ecore_iov_free(struct ecore_hwfn *p_hwfn);
  * @param p_dev
  */
 void ecore_iov_free_hw_info(struct ecore_dev *p_dev);
-
-/**
- * @brief ecore_sriov_eqe_event - handle async sriov event arrived on eqe.
- *
- * @param p_hwfn
- * @param opcode
- * @param echo
- * @param data
- */
-enum _ecore_status_t ecore_sriov_eqe_event(struct ecore_hwfn	 *p_hwfn,
-					   u8			 opcode,
-					   __le16		 echo,
-					   union event_ring_data *data);
-
-/**
- * @brief calculate CRC for bulletin board validation
- *
- * @param basic crc seed
- * @param ptr to beginning of buffer
- * @length in bytes of buffer
- *
- * @return calculated crc over buffer [with respect to seed].
- */
-u32 ecore_crc32(u32 crc,
-		u8  *ptr,
-		u32 length);
 
 /**
  * @brief Mark structs of vfs that have been FLR-ed.

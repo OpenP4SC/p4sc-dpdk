@@ -121,11 +121,24 @@ struct internal_config internal_config;
 /* used by rte_rdtsc() */
 int rte_cycles_vmware_tsc_map;
 
+/* Return mbuf pool ops name */
+const char *
+rte_eal_mbuf_default_mempool_ops(void)
+{
+	return internal_config.mbuf_pool_ops_name;
+}
+
 /* Return a pointer to the configuration structure */
 struct rte_config *
 rte_eal_get_configuration(void)
 {
 	return &rte_config;
+}
+
+enum rte_iova_mode
+rte_eal_iova_mode(void)
+{
+	return rte_eal_get_configuration()->iova_mode;
 }
 
 /* parse a sysfs (or other) file containing one integer value */
@@ -610,6 +623,10 @@ eal_parse_args(int argc, char **argv)
 			internal_config.create_uio_dev = 1;
 			break;
 
+		case OPT_MBUF_POOL_OPS_NAME_NUM:
+			internal_config.mbuf_pool_ops_name = optarg;
+			break;
+
 		default:
 			if (opt < OPT_LONG_MIN_NUM && isprint(opt)) {
 				RTE_LOG(ERR, EAL, "Option %c is not supported "
@@ -792,6 +809,22 @@ rte_eal_init(int argc, char **argv)
 		return -1;
 	}
 
+	if (eal_option_device_parse()) {
+		rte_errno = ENODEV;
+		rte_atomic32_clear(&run_once);
+		return -1;
+	}
+
+	if (rte_bus_scan()) {
+		rte_eal_init_alert("Cannot scan the buses for devices\n");
+		rte_errno = ENODEV;
+		rte_atomic32_clear(&run_once);
+		return -1;
+	}
+
+	/* autodetect the iova mapping mode (default is iova_pa) */
+	rte_eal_get_configuration()->iova_mode = rte_bus_get_iommu_class();
+
 	if (internal_config.no_hugetlbfs == 0 &&
 			internal_config.process_type != RTE_PROC_SECONDARY &&
 			internal_config.xen_dom0_support == 0 &&
@@ -886,17 +919,6 @@ rte_eal_init(int argc, char **argv)
 
 	if (rte_eal_intr_init() < 0) {
 		rte_eal_init_alert("Cannot init interrupt-handling thread\n");
-		return -1;
-	}
-
-	if (eal_option_device_parse()) {
-		rte_errno = ENODEV;
-		return -1;
-	}
-
-	if (rte_bus_scan()) {
-		rte_eal_init_alert("Cannot scan the buses for devices\n");
-		rte_errno = ENODEV;
 		return -1;
 	}
 

@@ -47,17 +47,10 @@
 #pragma GCC diagnostic error "-Wpedantic"
 #endif
 
-/* DPDK headers don't like -pedantic. */
-#ifdef PEDANTIC
-#pragma GCC diagnostic ignored "-Wpedantic"
-#endif
 #include <rte_mbuf.h>
 #include <rte_malloc.h>
 #include <rte_ethdev.h>
 #include <rte_common.h>
-#ifdef PEDANTIC
-#pragma GCC diagnostic error "-Wpedantic"
-#endif
 
 #include "mlx5_utils.h"
 #include "mlx5_defs.h"
@@ -169,13 +162,19 @@ txq_cleanup(struct txq_ctrl *txq_ctrl)
 static inline int
 txq_setup(struct txq_ctrl *tmpl, struct txq_ctrl *txq_ctrl)
 {
-	struct mlx5_qp *qp = to_mqp(tmpl->qp);
+	struct mlx5dv_qp qp;
 	struct ibv_cq *ibcq = tmpl->cq;
-	struct ibv_mlx5_cq_info cq_info;
+	struct mlx5dv_cq cq_info;
+	struct mlx5dv_obj obj;
+	int ret = 0;
 
-	if (ibv_mlx5_exp_get_cq_info(ibcq, &cq_info)) {
-		ERROR("Unable to query CQ info. check your OFED.");
-		return ENOTSUP;
+	obj.cq.in = ibcq;
+	obj.cq.out = &cq_info;
+	obj.qp.in = tmpl->qp;
+	obj.qp.out = &qp;
+	ret = mlx5dv_init_obj(&obj, MLX5DV_OBJ_CQ | MLX5DV_OBJ_QP);
+	if (ret != 0) {
+		return -EINVAL;
 	}
 	if (cq_info.cqe_size != RTE_CACHE_LINE_SIZE) {
 		ERROR("Wrong MLX5_CQE_SIZE environment variable value: "
@@ -183,11 +182,11 @@ txq_setup(struct txq_ctrl *tmpl, struct txq_ctrl *txq_ctrl)
 		return EINVAL;
 	}
 	tmpl->txq.cqe_n = log2above(cq_info.cqe_cnt);
-	tmpl->txq.qp_num_8s = qp->ctrl_seg.qp_num << 8;
-	tmpl->txq.wqes = qp->gen_data.sqstart;
-	tmpl->txq.wqe_n = log2above(qp->sq.wqe_cnt);
-	tmpl->txq.qp_db = &qp->gen_data.db[MLX5_SND_DBR];
-	tmpl->txq.bf_reg = qp->gen_data.bf->reg;
+	tmpl->txq.qp_num_8s = tmpl->qp->qp_num << 8;
+	tmpl->txq.wqes = qp.sq.buf;
+	tmpl->txq.wqe_n = log2above(qp.sq.wqe_cnt);
+	tmpl->txq.qp_db = &qp.dbrec[MLX5_SND_DBR];
+	tmpl->txq.bf_reg = qp.bf.reg;
 	tmpl->txq.cq_db = cq_info.dbrec;
 	tmpl->txq.cqes =
 		(volatile struct mlx5_cqe (*)[])
@@ -226,10 +225,10 @@ txq_ctrl_setup(struct rte_eth_dev *dev, struct txq_ctrl *txq_ctrl,
 		.socket = socket,
 	};
 	union {
-		struct ibv_exp_qp_init_attr init;
-		struct ibv_exp_cq_init_attr cq;
-		struct ibv_exp_qp_attr mod;
-		struct ibv_exp_cq_attr cq_attr;
+		struct ibv_qp_init_attr_ex init;
+		struct ibv_cq_init_attr_ex cq;
+		struct ibv_qp_attr mod;
+		struct ibv_cq_ex cq_attr;
 	} attr;
 	unsigned int cqe_n;
 	const unsigned int max_tso_inline = ((MLX5_MAX_TSO_HEADER +
@@ -248,16 +247,16 @@ txq_ctrl_setup(struct rte_eth_dev *dev, struct txq_ctrl *txq_ctrl,
 	if (priv->mps == MLX5_MPW_ENHANCED)
 		tmpl.txq.mpw_hdr_dseg = priv->mpw_hdr_dseg;
 	/* MRs will be registered in mp2mr[] later. */
-	attr.cq = (struct ibv_exp_cq_init_attr){
+	attr.cq = (struct ibv_cq_init_attr_ex){
 		.comp_mask = 0,
 	};
 	cqe_n = ((desc / MLX5_TX_COMP_THRESH) - 1) ?
 		((desc / MLX5_TX_COMP_THRESH) - 1) : 1;
 	if (priv->mps == MLX5_MPW_ENHANCED)
 		cqe_n += MLX5_TX_COMP_THRESH_INLINE_DIV;
-	tmpl.cq = ibv_exp_create_cq(priv->ctx,
-				    cqe_n,
-				    NULL, NULL, 0, &attr.cq);
+	tmpl.cq = ibv_create_cq(priv->ctx,
+				cqe_n,
+				NULL, NULL, 0);
 	if (tmpl.cq == NULL) {
 		ret = ENOMEM;
 		ERROR("%p: CQ creation failure: %s",
@@ -265,19 +264,20 @@ txq_ctrl_setup(struct rte_eth_dev *dev, struct txq_ctrl *txq_ctrl,
 		goto error;
 	}
 	DEBUG("priv->device_attr.max_qp_wr is %d",
-	      priv->device_attr.max_qp_wr);
+	      priv->device_attr.orig_attr.max_qp_wr);
 	DEBUG("priv->device_attr.max_sge is %d",
-	      priv->device_attr.max_sge);
-	attr.init = (struct ibv_exp_qp_init_attr){
+	      priv->device_attr.orig_attr.max_sge);
+	attr.init = (struct ibv_qp_init_attr_ex){
 		/* CQ to be associated with the send queue. */
 		.send_cq = tmpl.cq,
 		/* CQ to be associated with the receive queue. */
 		.recv_cq = tmpl.cq,
 		.cap = {
 			/* Max number of outstanding WRs. */
-			.max_send_wr = ((priv->device_attr.max_qp_wr < desc) ?
-					priv->device_attr.max_qp_wr :
-					desc),
+			.max_send_wr =
+			 ((priv->device_attr.orig_attr.max_qp_wr < desc) ?
+			   priv->device_attr.orig_attr.max_qp_wr :
+			   desc),
 			/*
 			 * Max number of scatter/gather elements in a WR,
 			 * must be 1 to prevent libmlx5 from trying to affect
@@ -292,9 +292,11 @@ txq_ctrl_setup(struct rte_eth_dev *dev, struct txq_ctrl *txq_ctrl,
 		 * TX burst. */
 		.sq_sig_all = 0,
 		.pd = priv->pd,
-		.comp_mask = IBV_EXP_QP_INIT_ATTR_PD,
+		.comp_mask = IBV_QP_INIT_ATTR_PD,
 	};
 	if (priv->txq_inline && (priv->txqs_n >= priv->txqs_inline)) {
+		unsigned int ds_cnt;
+
 		tmpl.txq.max_inline =
 			((priv->txq_inline + (RTE_CACHE_LINE_SIZE - 1)) /
 			 RTE_CACHE_LINE_SIZE);
@@ -327,18 +329,40 @@ txq_ctrl_setup(struct rte_eth_dev *dev, struct txq_ctrl *txq_ctrl,
 			attr.init.cap.max_inline_data =
 				tmpl.txq.max_inline * RTE_CACHE_LINE_SIZE;
 		}
+		/*
+		 * Check if the inline size is too large in a way which
+		 * can make the WQE DS to overflow.
+		 * Considering in calculation:
+		 *	WQE CTRL (1 DS)
+		 *	WQE ETH  (1 DS)
+		 *	Inline part (N DS)
+		 */
+		ds_cnt = 2 +
+			(attr.init.cap.max_inline_data / MLX5_WQE_DWORD_SIZE);
+		if (ds_cnt > MLX5_DSEG_MAX) {
+			unsigned int max_inline = (MLX5_DSEG_MAX - 2) *
+						   MLX5_WQE_DWORD_SIZE;
+
+			max_inline = max_inline - (max_inline %
+						   RTE_CACHE_LINE_SIZE);
+			WARN("txq inline is too large (%d) setting it to "
+			     "the maximum possible: %d\n",
+			     priv->txq_inline, max_inline);
+			tmpl.txq.max_inline = max_inline / RTE_CACHE_LINE_SIZE;
+			attr.init.cap.max_inline_data = max_inline;
+		}
 	}
 	if (priv->tso) {
 		attr.init.max_tso_header =
 			max_tso_inline * RTE_CACHE_LINE_SIZE;
-		attr.init.comp_mask |= IBV_EXP_QP_INIT_ATTR_MAX_TSO_HEADER;
+		attr.init.comp_mask |= IBV_QP_INIT_ATTR_MAX_TSO_HEADER;
 		tmpl.txq.max_inline = RTE_MAX(tmpl.txq.max_inline,
 					      max_tso_inline);
 		tmpl.txq.tso_en = 1;
 	}
 	if (priv->tunnel_en)
 		tmpl.txq.tunnel_en = 1;
-	tmpl.qp = ibv_exp_create_qp(priv->ctx, &attr.init);
+	tmpl.qp = ibv_create_qp_ex(priv->ctx, &attr.init);
 	if (tmpl.qp == NULL) {
 		ret = (errno ? errno : EINVAL);
 		ERROR("%p: QP creation failure: %s",
@@ -350,14 +374,14 @@ txq_ctrl_setup(struct rte_eth_dev *dev, struct txq_ctrl *txq_ctrl,
 	      attr.init.cap.max_send_wr,
 	      attr.init.cap.max_send_sge,
 	      attr.init.cap.max_inline_data);
-	attr.mod = (struct ibv_exp_qp_attr){
+	attr.mod = (struct ibv_qp_attr){
 		/* Move the QP to this state. */
 		.qp_state = IBV_QPS_INIT,
 		/* Primary port number. */
 		.port_num = priv->port
 	};
-	ret = ibv_exp_modify_qp(tmpl.qp, &attr.mod,
-				(IBV_EXP_QP_STATE | IBV_EXP_QP_PORT));
+	ret = ibv_modify_qp(tmpl.qp, &attr.mod,
+			    (IBV_QP_STATE | IBV_QP_PORT));
 	if (ret) {
 		ERROR("%p: QP state to IBV_QPS_INIT failed: %s",
 		      (void *)dev, strerror(ret));
@@ -370,17 +394,17 @@ txq_ctrl_setup(struct rte_eth_dev *dev, struct txq_ctrl *txq_ctrl,
 		goto error;
 	}
 	txq_alloc_elts(&tmpl, desc);
-	attr.mod = (struct ibv_exp_qp_attr){
+	attr.mod = (struct ibv_qp_attr){
 		.qp_state = IBV_QPS_RTR
 	};
-	ret = ibv_exp_modify_qp(tmpl.qp, &attr.mod, IBV_EXP_QP_STATE);
+	ret = ibv_modify_qp(tmpl.qp, &attr.mod, IBV_QP_STATE);
 	if (ret) {
 		ERROR("%p: QP state to IBV_QPS_RTR failed: %s",
 		      (void *)dev, strerror(ret));
 		goto error;
 	}
 	attr.mod.qp_state = IBV_QPS_RTS;
-	ret = ibv_exp_modify_qp(tmpl.qp, &attr.mod, IBV_EXP_QP_STATE);
+	ret = ibv_modify_qp(tmpl.qp, &attr.mod, IBV_QP_STATE);
 	if (ret) {
 		ERROR("%p: QP state to IBV_QPS_RTS failed: %s",
 		      (void *)dev, strerror(ret));
@@ -532,45 +556,4 @@ mlx5_tx_queue_release(void *dpdk_txq)
 	txq_cleanup(txq_ctrl);
 	rte_free(txq_ctrl);
 	priv_unlock(priv);
-}
-
-/**
- * DPDK callback for TX in secondary processes.
- *
- * This function configures all queues from primary process information
- * if necessary before reverting to the normal TX burst callback.
- *
- * @param dpdk_txq
- *   Generic pointer to TX queue structure.
- * @param[in] pkts
- *   Packets to transmit.
- * @param pkts_n
- *   Number of packets in array.
- *
- * @return
- *   Number of packets successfully transmitted (<= pkts_n).
- */
-uint16_t
-mlx5_tx_burst_secondary_setup(void *dpdk_txq, struct rte_mbuf **pkts,
-			      uint16_t pkts_n)
-{
-	struct txq *txq = dpdk_txq;
-	struct txq_ctrl *txq_ctrl = container_of(txq, struct txq_ctrl, txq);
-	struct priv *priv = mlx5_secondary_data_setup(txq_ctrl->priv);
-	struct priv *primary_priv;
-	unsigned int index;
-
-	if (priv == NULL)
-		return 0;
-	primary_priv =
-		mlx5_secondary_data[priv->dev->data->port_id].primary_priv;
-	/* Look for queue index in both private structures. */
-	for (index = 0; index != priv->txqs_n; ++index)
-		if (((*primary_priv->txqs)[index] == txq) ||
-		    ((*priv->txqs)[index] == txq))
-			break;
-	if (index == priv->txqs_n)
-		return 0;
-	txq = (*priv->txqs)[index];
-	return priv->dev->tx_pkt_burst(txq, pkts, pkts_n);
 }

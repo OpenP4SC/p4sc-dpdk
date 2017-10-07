@@ -43,21 +43,15 @@
 #pragma GCC diagnostic ignored "-Wpedantic"
 #endif
 #include <infiniband/verbs.h>
-#include <infiniband/mlx5_hw.h>
+#include <infiniband/mlx5dv.h>
 #ifdef PEDANTIC
 #pragma GCC diagnostic error "-Wpedantic"
 #endif
 
-/* DPDK headers don't like -pedantic. */
-#ifdef PEDANTIC
-#pragma GCC diagnostic ignored "-Wpedantic"
-#endif
 #include <rte_mbuf.h>
 #include <rte_mempool.h>
 #include <rte_common.h>
-#ifdef PEDANTIC
-#pragma GCC diagnostic error "-Wpedantic"
-#endif
+#include <rte_hexdump.h>
 
 #include "mlx5_utils.h"
 #include "mlx5.h"
@@ -81,14 +75,14 @@ struct mlx5_txq_stats {
 	uint64_t opackets; /**< Total of successfully sent packets. */
 	uint64_t obytes; /**< Total of successfully sent bytes. */
 #endif
-	uint64_t odropped; /**< Total of packets not sent when TX ring full. */
+	uint64_t oerrors; /**< Total number of failed transmitted packets. */
 };
 
 /* Flow director queue structure. */
 struct fdir_queue {
 	struct ibv_qp *qp; /* Associated RX QP. */
-	struct ibv_exp_rwq_ind_table *ind_table; /* Indirection table. */
-	struct ibv_exp_wq *wq; /* Work queue. */
+	struct ibv_rwq_ind_table *ind_table; /* Indirection table. */
+	struct ibv_wq *wq; /* Work queue. */
 	struct ibv_cq *cq; /* Completion queue. */
 };
 
@@ -112,14 +106,13 @@ struct rxq {
 	unsigned int sges_n:2; /* Log 2 of SGEs (max buffers per packet). */
 	unsigned int cqe_n:4; /* Log 2 of CQ elements. */
 	unsigned int elts_n:4; /* Log 2 of Mbufs. */
-	unsigned int port_id:8;
 	unsigned int rss_hash:1; /* RSS hash result is enabled. */
 	unsigned int mark:1; /* Marked flow available on the queue. */
 	unsigned int pending_err:1; /* CQE error needs to be handled. */
-	unsigned int trim_elts:1; /* Whether elts needs clean-up. */
-	unsigned int :6; /* Remaining bits. */
+	unsigned int :15; /* Remaining bits. */
 	volatile uint32_t *rq_db;
 	volatile uint32_t *cq_db;
+	uint16_t port_id;
 	uint16_t rq_ci;
 	uint16_t rq_pi;
 	uint16_t cq_ci;
@@ -131,13 +124,16 @@ struct rxq {
 	struct mlx5_rxq_stats stats;
 	uint64_t mbuf_initializer; /* Default rearm_data for vectorized Rx. */
 	struct rte_mbuf fake_mbuf; /* elts padding for vectorized Rx. */
+	void *cq_uar; /* CQ user access region. */
+	uint32_t cqn; /* CQ number. */
+	uint8_t cq_arm_sn; /* CQ arm seq number. */
 } __rte_cache_aligned;
 
 /* RX queue control descriptor. */
 struct rxq_ctrl {
 	struct priv *priv; /* Back pointer to private data. */
 	struct ibv_cq *cq; /* Completion Queue. */
-	struct ibv_exp_wq *wq; /* Work Queue. */
+	struct ibv_wq *wq; /* Work Queue. */
 	struct fdir_queue *fdir_queue; /* Flow director queue. */
 	struct ibv_mr *mr; /* Memory Region (for mp). */
 	struct ibv_comp_channel *channel;
@@ -159,8 +155,8 @@ enum hash_rxq_type {
 /* Flow structure with Ethernet specification. It is packed to prevent padding
  * between attr and spec as this layout is expected by libibverbs. */
 struct flow_attr_spec_eth {
-	struct ibv_exp_flow_attr attr;
-	struct ibv_exp_flow_spec_eth spec;
+	struct ibv_flow_attr attr;
+	struct ibv_flow_spec_eth spec;
 } __attribute__((packed));
 
 /* Define a struct flow_attr_spec_eth object as an array of at least
@@ -178,13 +174,13 @@ struct hash_rxq_init {
 	unsigned int flow_priority; /* Flow priority to use. */
 	union {
 		struct {
-			enum ibv_exp_flow_spec_type type;
+			enum ibv_flow_spec_type type;
 			uint16_t size;
 		} hdr;
-		struct ibv_exp_flow_spec_tcp_udp tcp_udp;
-		struct ibv_exp_flow_spec_ipv4 ipv4;
-		struct ibv_exp_flow_spec_ipv6 ipv6;
-		struct ibv_exp_flow_spec_eth eth;
+		struct ibv_flow_spec_tcp_udp tcp_udp;
+		struct ibv_flow_spec_ipv4 ipv4;
+		struct ibv_flow_spec_ipv6 ipv6;
+		struct ibv_flow_spec_eth eth;
 	} flow_spec; /* Flow specification template. */
 	const struct hash_rxq_init *underlayer; /* Pointer to underlayer. */
 };
@@ -238,9 +234,9 @@ struct hash_rxq {
 	struct ibv_qp *qp; /* Hash RX QP. */
 	enum hash_rxq_type type; /* Hash RX queue type. */
 	/* MAC flow steering rules, one per VLAN ID. */
-	struct ibv_exp_flow *mac_flow
+	struct ibv_flow *mac_flow
 		[MLX5_MAX_MAC_ADDRESSES][MLX5_MAX_VLAN_IDS];
-	struct ibv_exp_flow *special_flow
+	struct ibv_flow *special_flow
 		[MLX5_MAX_SPECIAL_FLOWS][MLX5_MAX_VLAN_IDS];
 };
 
@@ -276,7 +272,7 @@ struct txq {
 		uintptr_t start; /* Start address of MR */
 		uintptr_t end; /* End address of MR */
 		struct ibv_mr *mr; /* Memory Region (for mp). */
-		uint32_t lkey; /* htonl(mr->lkey) */
+		uint32_t lkey; /* rte_cpu_to_be_32(mr->lkey) */
 	} mp2mr[MLX5_PMD_TX_MP_CACHE]; /* MP to MR translation table. */
 	uint16_t mr_cache_idx; /* Index of last hit entry. */
 	struct rte_mbuf *(*elts)[]; /* TX elements. */
@@ -300,7 +296,7 @@ extern const unsigned int hash_rxq_init_n;
 extern uint8_t rss_hash_default_key[];
 extern const size_t rss_hash_default_key_len;
 
-size_t priv_flow_attr(struct priv *, struct ibv_exp_flow_attr *,
+size_t priv_flow_attr(struct priv *, struct ibv_flow_attr *,
 		      size_t, enum hash_rxq_type);
 int priv_create_hash_rxqs(struct priv *);
 void priv_destroy_hash_rxqs(struct priv *);
@@ -310,13 +306,10 @@ void rxq_cleanup(struct rxq_ctrl *);
 int mlx5_rx_queue_setup(struct rte_eth_dev *, uint16_t, uint16_t, unsigned int,
 			const struct rte_eth_rxconf *, struct rte_mempool *);
 void mlx5_rx_queue_release(void *);
-uint16_t mlx5_rx_burst_secondary_setup(void *, struct rte_mbuf **, uint16_t);
 int priv_rx_intr_vec_enable(struct priv *priv);
 void priv_rx_intr_vec_disable(struct priv *priv);
-#ifdef HAVE_UPDATE_CQ_CI
 int mlx5_rx_intr_enable(struct rte_eth_dev *dev, uint16_t rx_queue_id);
 int mlx5_rx_intr_disable(struct rte_eth_dev *dev, uint16_t rx_queue_id);
-#endif /* HAVE_UPDATE_CQ_CI */
 
 /* mlx5_txq.c */
 
@@ -326,7 +319,6 @@ int txq_ctrl_setup(struct rte_eth_dev *, struct txq_ctrl *, uint16_t,
 int mlx5_tx_queue_setup(struct rte_eth_dev *, uint16_t, uint16_t, unsigned int,
 			const struct rte_eth_txconf *);
 void mlx5_tx_queue_release(void *);
-uint16_t mlx5_tx_burst_secondary_setup(void *, struct rte_mbuf **, uint16_t);
 
 /* mlx5_rxtx.c */
 
@@ -348,7 +340,6 @@ int priv_check_raw_vec_tx_support(struct priv *);
 int priv_check_vec_tx_support(struct priv *);
 int rxq_check_vec_support(struct rxq *);
 int priv_check_vec_rx_support(struct priv *);
-void priv_prep_vec_rx_function(struct priv *);
 uint16_t mlx5_tx_burst_raw_vec(void *, struct rte_mbuf **, uint16_t);
 uint16_t mlx5_tx_burst_vec(void *, struct rte_mbuf **, uint16_t);
 uint16_t mlx5_rx_burst_vec(void *, struct rte_mbuf **, uint16_t);
@@ -419,16 +410,24 @@ check_cqe(volatile struct mlx5_cqe *cqe,
 		if ((syndrome == MLX5_CQE_SYNDROME_LOCAL_LENGTH_ERR) ||
 		    (syndrome == MLX5_CQE_SYNDROME_REMOTE_ABORTED_ERR))
 			return 0;
-		if (!check_cqe_seen(cqe))
+		if (!check_cqe_seen(cqe)) {
 			ERROR("unexpected CQE error %u (0x%02x)"
 			      " syndrome 0x%02x",
 			      op_code, op_code, syndrome);
+			rte_hexdump(stderr, "MLX5 Error CQE:",
+				    (const void *)((uintptr_t)err_cqe),
+				    sizeof(*err_cqe));
+		}
 		return 1;
 	} else if ((op_code != MLX5_CQE_RESP_SEND) &&
 		   (op_code != MLX5_CQE_REQ)) {
-		if (!check_cqe_seen(cqe))
+		if (!check_cqe_seen(cqe)) {
 			ERROR("unexpected CQE opcode %u (0x%02x)",
 			      op_code, op_code);
+			rte_hexdump(stderr, "MLX5 CQE:",
+				    (const void *)((uintptr_t)cqe),
+				    sizeof(*cqe));
+		}
 		return 1;
 	}
 #endif /* NDEBUG */
@@ -483,13 +482,18 @@ mlx5_tx_complete(struct txq *txq)
 #ifndef NDEBUG
 	if ((MLX5_CQE_OPCODE(cqe->op_own) == MLX5_CQE_RESP_ERR) ||
 	    (MLX5_CQE_OPCODE(cqe->op_own) == MLX5_CQE_REQ_ERR)) {
-		if (!check_cqe_seen(cqe))
+		if (!check_cqe_seen(cqe)) {
 			ERROR("unexpected error CQE, TX stopped");
+			rte_hexdump(stderr, "MLX5 TXQ:",
+				    (const void *)((uintptr_t)txq->wqes),
+				    ((1 << txq->wqe_n) *
+				     MLX5_WQE_SIZE));
+		}
 		return;
 	}
 #endif /* NDEBUG */
 	++cq_ci;
-	txq->wqe_pi = ntohs(cqe->wqe_counter);
+	txq->wqe_pi = rte_be_to_cpu_16(cqe->wqe_counter);
 	ctrl = (volatile struct mlx5_wqe_ctrl *)
 		tx_mlx5_wqe(txq, txq->wqe_pi);
 	elts_tail = ctrl->ctrl3;
@@ -527,7 +531,7 @@ mlx5_tx_complete(struct txq *txq)
 	txq->elts_tail = elts_tail;
 	/* Update the consumer index. */
 	rte_wmb();
-	*txq->cq_db = htonl(cq_ci);
+	*txq->cq_db = rte_cpu_to_be_32(cq_ci);
 }
 
 /**
@@ -578,7 +582,7 @@ mlx5_tx_mb2mr(struct txq *txq, struct rte_mbuf *mb)
 		if (txq->mp2mr[i].start <= addr &&
 		    txq->mp2mr[i].end >= addr) {
 			assert(txq->mp2mr[i].lkey != (uint32_t)-1);
-			assert(htonl(txq->mp2mr[i].mr->lkey) ==
+			assert(rte_cpu_to_be_32(txq->mp2mr[i].mr->lkey) ==
 			       txq->mp2mr[i].lkey);
 			txq->mr_cache_idx = i;
 			return txq->mp2mr[i].lkey;
@@ -602,8 +606,8 @@ mlx5_tx_dbrec(struct txq *txq, volatile struct mlx5_wqe *wqe)
 	uint64_t *dst = (uint64_t *)((uintptr_t)txq->bf_reg);
 	volatile uint64_t *src = ((volatile uint64_t *)wqe);
 
-	rte_wmb();
-	*txq->qp_db = htonl(txq->wqe_ci);
+	rte_io_wmb();
+	*txq->qp_db = rte_cpu_to_be_32(txq->wqe_ci);
 	/* Ensure ordering between DB record and BF copy. */
 	rte_wmb();
 	*dst = *src;

@@ -364,12 +364,12 @@ qede_alloc_mem_sb(struct qede_dev *qdev, struct ecore_sb_info *sb_info,
 		  uint16_t sb_id)
 {
 	struct ecore_dev *edev = QEDE_INIT_EDEV(qdev);
-	struct status_block *sb_virt;
+	struct status_block_e4 *sb_virt;
 	dma_addr_t sb_phys;
 	int rc;
 
 	sb_virt = OSAL_DMA_ALLOC_COHERENT(edev, &sb_phys,
-					  sizeof(struct status_block));
+					  sizeof(struct status_block_e4));
 	if (!sb_virt) {
 		DP_ERR(edev, "Status block allocation failed\n");
 		return -ENOMEM;
@@ -379,7 +379,7 @@ qede_alloc_mem_sb(struct qede_dev *qdev, struct ecore_sb_info *sb_info,
 	if (rc) {
 		DP_ERR(edev, "Status block initialization failed\n");
 		OSAL_DMA_FREE_COHERENT(edev, sb_virt, sb_phys,
-				       sizeof(struct status_block));
+				       sizeof(struct status_block_e4));
 		return rc;
 	}
 
@@ -453,7 +453,7 @@ void qede_dealloc_fp_resc(struct rte_eth_dev *eth_dev)
 		if (fp->sb_info) {
 			OSAL_DMA_FREE_COHERENT(edev, fp->sb_info->sb_virt,
 				fp->sb_info->sb_phys,
-				sizeof(struct status_block));
+				sizeof(struct status_block_e4));
 			rte_free(fp->sb_info);
 			fp->sb_info = NULL;
 		}
@@ -555,7 +555,7 @@ qede_rx_queue_start(struct rte_eth_dev *eth_dev, uint16_t rx_queue_id)
 		params.queue_id = rx_queue_id / edev->num_hwfns;
 		params.vport_id = 0;
 		params.stats_id = params.vport_id;
-		params.sb = fp->sb_info->igu_sb_id;
+		params.p_sb = fp->sb_info;
 		DP_INFO(edev, "rxq %u igu_sb_id 0x%x\n",
 				fp->rxq->queue_id, fp->sb_info->igu_sb_id);
 		params.sb_idx = RX_PI;
@@ -614,7 +614,7 @@ qede_tx_queue_start(struct rte_eth_dev *eth_dev, uint16_t tx_queue_id)
 		params.queue_id = tx_queue_id / edev->num_hwfns;
 		params.vport_id = 0;
 		params.stats_id = params.vport_id;
-		params.sb = fp->sb_info->igu_sb_id;
+		params.p_sb = fp->sb_info;
 		DP_INFO(edev, "txq %u igu_sb_id 0x%x\n",
 				fp->txq->queue_id, fp->sb_info->igu_sb_id);
 		params.sb_idx = TX_PI(0); /* tc = 0 */
@@ -780,7 +780,7 @@ int qede_start_queues(struct rte_eth_dev *eth_dev)
 {
 	struct qede_dev *qdev = QEDE_INIT_QDEV(eth_dev);
 	uint8_t id;
-	int rc;
+	int rc = -1;
 
 	for_each_rss(id) {
 		rc = qede_rx_queue_start(eth_dev, id);

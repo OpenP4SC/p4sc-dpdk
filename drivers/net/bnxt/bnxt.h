@@ -126,7 +126,7 @@ struct bnxt_pf_info {
 #define BNXT_FIRST_VF_FID	128
 #define BNXT_PF_RINGS_USED(bp)	bnxt_get_num_queues(bp)
 #define BNXT_PF_RINGS_AVAIL(bp)	(bp->pf.max_cp_rings - BNXT_PF_RINGS_USED(bp))
-	uint8_t			port_id;
+	uint16_t		port_id;
 	uint16_t		first_vf_id;
 	uint16_t		active_vfs;
 	uint16_t		max_vfs;
@@ -171,11 +171,18 @@ struct bnxt_cos_queue_info {
 	uint8_t	profile;
 };
 
+struct rte_flow {
+	STAILQ_ENTRY(rte_flow) next;
+	struct bnxt_filter_info *filter;
+	struct bnxt_vnic_info	*vnic;
+};
+
 #define BNXT_HWRM_SHORT_REQ_LEN		sizeof(struct hwrm_short_input)
 struct bnxt {
 	void				*bar0;
 
 	struct rte_eth_dev		*eth_dev;
+	struct rte_eth_rss_conf		rss_conf;
 	struct rte_pci_device		*pdev;
 
 	uint32_t		flags;
@@ -184,6 +191,7 @@ struct bnxt {
 #define BNXT_FLAG_PORT_STATS	(1 << 2)
 #define BNXT_FLAG_JUMBO		(1 << 3)
 #define BNXT_FLAG_SHORT_CMD	(1 << 4)
+#define BNXT_FLAG_UPDATE_HASH	(1 << 5)
 #define BNXT_PF(bp)		(!((bp)->flags & BNXT_FLAG_VF))
 #define BNXT_VF(bp)		((bp)->flags & BNXT_FLAG_VF)
 #define BNXT_NPAR_ENABLED(bp)	((bp)->port_partition_type)
@@ -217,7 +225,7 @@ struct bnxt {
 	STAILQ_HEAD(, bnxt_filter_info)	free_filter_list;
 
 	/* VNIC pointer for flow filter (VMDq) pools */
-#define MAX_FF_POOLS	ETH_64_POOLS
+#define MAX_FF_POOLS	256
 	STAILQ_HEAD(, bnxt_vnic_info)	ff_pool[MAX_FF_POOLS];
 
 	struct bnxt_irq         *irq_tbl;
@@ -269,4 +277,5 @@ int bnxt_rcv_msg_from_vf(struct bnxt *bp, uint16_t vf_id, void *msg);
 #define RX_PROD_AGG_BD_TYPE_RX_PROD_AGG		0x6
 
 bool is_bnxt_supported(struct rte_eth_dev *dev);
+extern const struct rte_flow_ops bnxt_flow_ops;
 #endif

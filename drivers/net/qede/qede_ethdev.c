@@ -1161,7 +1161,7 @@ static int qede_dev_configure(struct rte_eth_dev *eth_dev)
 	PMD_INIT_FUNC_TRACE(edev);
 
 	/* Check requirements for 100G mode */
-	if (edev->num_hwfns > 1) {
+	if (ECORE_IS_CMT(edev)) {
 		if (eth_dev->data->nb_rx_queues < 2 ||
 				eth_dev->data->nb_tx_queues < 2) {
 			DP_ERR(edev, "100G mode needs min. 2 RX/TX queues\n");
@@ -1456,7 +1456,7 @@ static void qede_dev_close(struct rte_eth_dev *eth_dev)
 	rte_intr_disable(&pci_dev->intr_handle);
 	rte_intr_callback_unregister(&pci_dev->intr_handle,
 				     qede_interrupt_handler, (void *)eth_dev);
-	if (edev->num_hwfns > 1)
+	if (ECORE_IS_CMT(edev))
 		rte_eal_alarm_cancel(qede_poll_sp_sb_cb, (void *)eth_dev);
 }
 
@@ -2012,6 +2012,10 @@ int qede_rss_reta_update(struct rte_eth_dev *eth_dev,
 	memset(&vport_update_params, 0, sizeof(vport_update_params));
 	params = rte_zmalloc("qede_rss", sizeof(*params) * edev->num_hwfns,
 			     RTE_CACHE_LINE_SIZE);
+	if (params == NULL) {
+		DP_ERR(edev, "failed to allocate memory\n");
+		return -ENOMEM;
+	}
 
 	for (i = 0; i < reta_size; i++) {
 		idx = i / RTE_RETA_GROUP_SIZE;
@@ -2031,7 +2035,7 @@ int qede_rss_reta_update(struct rte_eth_dev *eth_dev,
 	params->update_rss_config = 1;
 
 	/* Fix up RETA for CMT mode device */
-	if (edev->num_hwfns > 1)
+	if (ECORE_IS_CMT(edev))
 		qdev->rss_enable = qede_update_rss_parm_cmt(edev,
 							    params);
 	vport_update_params.vport_id = 0;
@@ -2163,11 +2167,15 @@ qede_conf_udp_dst_port(struct rte_eth_dev *eth_dev,
 						  QEDE_VXLAN_DEF_PORT;
 		for_each_hwfn(edev, i) {
 			p_hwfn = &edev->hwfns[i];
-			rc = ecore_sp_pf_update_tunn_cfg(p_hwfn, &tunn,
+			struct ecore_ptt *p_ptt = IS_PF(edev) ?
+			       ecore_ptt_acquire(p_hwfn) : NULL;
+			rc = ecore_sp_pf_update_tunn_cfg(p_hwfn, p_ptt, &tunn,
 						ECORE_SPQ_MODE_CB, NULL);
 			if (rc != ECORE_SUCCESS) {
 				DP_ERR(edev, "Unable to config UDP port %u\n",
 				       tunn.vxlan_port.port);
+				if (IS_PF(edev))
+					ecore_ptt_release(p_hwfn, p_ptt);
 				return rc;
 			}
 		}
@@ -2314,11 +2322,15 @@ static int qede_vxlan_tunn_config(struct rte_eth_dev *eth_dev,
 		qede_set_cmn_tunn_param(&tunn, clss, true, true);
 		for_each_hwfn(edev, i) {
 			p_hwfn = &edev->hwfns[i];
-			rc = ecore_sp_pf_update_tunn_cfg(p_hwfn,
+			struct ecore_ptt *p_ptt = IS_PF(edev) ?
+			       ecore_ptt_acquire(p_hwfn) : NULL;
+			rc = ecore_sp_pf_update_tunn_cfg(p_hwfn, p_ptt,
 				&tunn, ECORE_SPQ_MODE_CB, NULL);
 			if (rc != ECORE_SUCCESS) {
 				DP_ERR(edev, "Failed to update tunn_clss %u\n",
 				       tunn.vxlan.tun_cls);
+				if (IS_PF(edev))
+					ecore_ptt_release(p_hwfn, p_ptt);
 			}
 		}
 		qdev->num_tunn_filters++; /* Filter added successfully */
@@ -2348,12 +2360,17 @@ static int qede_vxlan_tunn_config(struct rte_eth_dev *eth_dev,
 			qede_set_cmn_tunn_param(&tunn, clss, false, true);
 			for_each_hwfn(edev, i) {
 				p_hwfn = &edev->hwfns[i];
-				rc = ecore_sp_pf_update_tunn_cfg(p_hwfn, &tunn,
-					ECORE_SPQ_MODE_CB, NULL);
+				struct ecore_ptt *p_ptt = IS_PF(edev) ?
+				       ecore_ptt_acquire(p_hwfn) : NULL;
+				rc = ecore_sp_pf_update_tunn_cfg(p_hwfn, p_ptt,
+					&tunn, ECORE_SPQ_MODE_CB, NULL);
 				if (rc != ECORE_SUCCESS) {
 					DP_ERR(edev,
 						"Failed to update tunn_clss %u\n",
 						tunn.vxlan.tun_cls);
+					if (IS_PF(edev))
+						ecore_ptt_release(p_hwfn,
+								  p_ptt);
 					break;
 				}
 			}
@@ -2583,7 +2600,7 @@ static int qede_common_dev_init(struct rte_eth_dev *eth_dev, bool is_vf)
 	 * This is required since uio device uses only one MSI-x
 	 * interrupt vector but we need one for each engine.
 	 */
-	if (edev->num_hwfns > 1 && IS_PF(edev)) {
+	if (ECORE_IS_CMT(edev) && IS_PF(edev)) {
 		rc = rte_eal_alarm_set(timer_period * US_PER_S,
 				       qede_poll_sp_sb_cb,
 				       (void *)eth_dev);

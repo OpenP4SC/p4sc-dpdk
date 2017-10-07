@@ -45,14 +45,7 @@
 #pragma GCC diagnostic error "-Wpedantic"
 #endif
 
-/* DPDK headers don't like -pedantic. */
-#ifdef PEDANTIC
-#pragma GCC diagnostic ignored "-Wpedantic"
-#endif
 #include <rte_ethdev.h>
-#ifdef PEDANTIC
-#pragma GCC diagnostic error "-Wpedantic"
-#endif
 
 #include "mlx5.h"
 #include "mlx5_rxtx.h"
@@ -129,10 +122,10 @@ hash_rxq_special_flow_enable_vlan(struct hash_rxq *hash_rxq,
 				  unsigned int vlan_index)
 {
 	struct priv *priv = hash_rxq->priv;
-	struct ibv_exp_flow *flow;
+	struct ibv_flow *flow;
 	FLOW_ATTR_SPEC_ETH(data, priv_flow_attr(priv, NULL, 0, hash_rxq->type));
-	struct ibv_exp_flow_attr *attr = &data->attr;
-	struct ibv_exp_flow_spec_eth *spec = &data->spec;
+	struct ibv_flow_attr *attr = &data->attr;
+	struct ibv_flow_spec_eth *spec = &data->spec;
 	const uint8_t *mac;
 	const uint8_t *mask;
 	unsigned int vlan_enabled = (priv->vlan_filter_n &&
@@ -153,32 +146,36 @@ hash_rxq_special_flow_enable_vlan(struct hash_rxq *hash_rxq,
 	assert(((uint8_t *)attr + sizeof(*attr)) == (uint8_t *)spec);
 	priv_flow_attr(priv, attr, sizeof(data), hash_rxq->type);
 	/* The first specification must be Ethernet. */
-	assert(spec->type == IBV_EXP_FLOW_SPEC_ETH);
+	assert(spec->type == IBV_FLOW_SPEC_ETH);
 	assert(spec->size == sizeof(*spec));
 
 	mac = special_flow_init[flow_type].dst_mac_val;
 	mask = special_flow_init[flow_type].dst_mac_mask;
-	*spec = (struct ibv_exp_flow_spec_eth){
-		.type = IBV_EXP_FLOW_SPEC_ETH,
+	*spec = (struct ibv_flow_spec_eth){
+		.type = IBV_FLOW_SPEC_ETH,
 		.size = sizeof(*spec),
 		.val = {
 			.dst_mac = {
 				mac[0], mac[1], mac[2],
 				mac[3], mac[4], mac[5],
 			},
-			.vlan_tag = (vlan_enabled ? htons(vlan_id) : 0),
+			.vlan_tag = (vlan_enabled ?
+				     rte_cpu_to_be_16(vlan_id) :
+				     0),
 		},
 		.mask = {
 			.dst_mac = {
 				mask[0], mask[1], mask[2],
 				mask[3], mask[4], mask[5],
 			},
-			.vlan_tag = (vlan_enabled ? htons(0xfff) : 0),
+			.vlan_tag = (vlan_enabled ?
+				     rte_cpu_to_be_16(0xfff) :
+				     0),
 		},
 	};
 
 	errno = 0;
-	flow = ibv_exp_create_flow(hash_rxq->qp, attr);
+	flow = ibv_create_flow(hash_rxq->qp, attr);
 	if (flow == NULL) {
 		/* It's not clear whether errno is always set in this case. */
 		ERROR("%p: flow configuration failed, errno=%d: %s",
@@ -210,12 +207,12 @@ hash_rxq_special_flow_disable_vlan(struct hash_rxq *hash_rxq,
 				   enum hash_rxq_flow_type flow_type,
 				   unsigned int vlan_index)
 {
-	struct ibv_exp_flow *flow =
+	struct ibv_flow *flow =
 		hash_rxq->special_flow[flow_type][vlan_index];
 
 	if (flow == NULL)
 		return;
-	claim_zero(ibv_exp_destroy_flow(flow));
+	claim_zero(ibv_destroy_flow(flow));
 	hash_rxq->special_flow[flow_type][vlan_index] = NULL;
 	DEBUG("%p: special flow %s (index %d) VLAN %u (index %u) disabled",
 	      (void *)hash_rxq, hash_rxq_flow_type_str(flow_type), flow_type,

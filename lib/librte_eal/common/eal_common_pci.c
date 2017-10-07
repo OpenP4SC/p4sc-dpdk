@@ -150,16 +150,8 @@ pci_unmap_resource(void *requested_addr, size_t size)
 
 /*
  * Match the PCI Driver and Device using the ID Table
- *
- * @param pci_drv
- *	PCI driver from which ID table would be extracted
- * @param pci_dev
- *	PCI device to match against the driver
- * @return
- *	1 for successful match
- *	0 for unsuccessful match
  */
-static int
+int
 rte_pci_match(const struct rte_pci_driver *pci_drv,
 	      const struct rte_pci_device *pci_dev)
 {
@@ -572,6 +564,7 @@ struct rte_pci_bus rte_pci_bus = {
 		.plug = pci_plug,
 		.unplug = pci_unplug,
 		.parse = pci_parse,
+		.get_iommu_class = rte_pci_get_iommu_class,
 	},
 	.device_list = TAILQ_HEAD_INITIALIZER(rte_pci_bus.device_list),
 	.driver_list = TAILQ_HEAD_INITIALIZER(rte_pci_bus.driver_list),

@@ -2,7 +2,7 @@
  *   BSD LICENSE
  *
  *   Copyright 2017 6WIND S.A.
- *   Copyright 2017 Mellanox.
+ *   Copyright 2017 Mellanox
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -31,18 +31,40 @@
  *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <assert.h>
+/**
+ * @file
+ * Flow API operations for mlx4 driver.
+ */
 
+#include <arpa/inet.h>
+#include <assert.h>
+#include <errno.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+#include <sys/queue.h>
+
+/* Verbs headers do not support -pedantic. */
+#ifdef PEDANTIC
+#pragma GCC diagnostic ignored "-Wpedantic"
+#endif
+#include <infiniband/verbs.h>
+#ifdef PEDANTIC
+#pragma GCC diagnostic error "-Wpedantic"
+#endif
+
+#include <rte_errno.h>
+#include <rte_eth_ctrl.h>
+#include <rte_ethdev.h>
 #include <rte_flow.h>
 #include <rte_flow_driver.h>
 #include <rte_malloc.h>
 
-/* Generated configuration header. */
-#include "mlx4_autoconf.h"
-
 /* PMD headers. */
 #include "mlx4.h"
 #include "mlx4_flow.h"
+#include "mlx4_rxtx.h"
+#include "mlx4_utils.h"
 
 /** Static initializer for items. */
 #define ITEMS(...) \
@@ -112,7 +134,6 @@ struct rte_flow_drop {
 static const enum rte_flow_action_type valid_actions[] = {
 	RTE_FLOW_ACTION_TYPE_DROP,
 	RTE_FLOW_ACTION_TYPE_QUEUE,
-	RTE_FLOW_ACTION_TYPE_RSS,
 	RTE_FLOW_ACTION_TYPE_END,
 };
 
@@ -545,7 +566,7 @@ static const struct mlx4_flow_items mlx4_flow_items[] = {
 };
 
 /**
- * Validate a flow supported by the NIC.
+ * Make sure a flow rule is supported and initialize associated structure.
  *
  * @param priv
  *   Pointer to private structure.
@@ -564,12 +585,12 @@ static const struct mlx4_flow_items mlx4_flow_items[] = {
  *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 static int
-priv_flow_validate(struct priv *priv,
-		   const struct rte_flow_attr *attr,
-		   const struct rte_flow_item items[],
-		   const struct rte_flow_action actions[],
-		   struct rte_flow_error *error,
-		   struct mlx4_flow *flow)
+mlx4_flow_prepare(struct priv *priv,
+		  const struct rte_flow_attr *attr,
+		  const struct rte_flow_item items[],
+		  const struct rte_flow_action actions[],
+		  struct rte_flow_error *error,
+		  struct mlx4_flow *flow)
 {
 	const struct mlx4_flow_items *cur_item = mlx4_flow_items;
 	struct mlx4_flow_action action = {
@@ -670,79 +691,10 @@ priv_flow_validate(struct priv *priv,
 				(const struct rte_flow_action_queue *)
 				actions->conf;
 
-			if (!queue || (queue->index > (priv->rxqs_n - 1)))
+			if (!queue || (queue->index >
+				       (priv->dev->data->nb_rx_queues - 1)))
 				goto exit_action_not_supported;
 			action.queue = 1;
-			action.queues_n = 1;
-			action.queues[0] = queue->index;
-		} else if (actions->type == RTE_FLOW_ACTION_TYPE_RSS) {
-			int i;
-			int ierr;
-			const struct rte_flow_action_rss *rss =
-				(const struct rte_flow_action_rss *)
-				actions->conf;
-
-			if (!priv->hw_rss) {
-				rte_flow_error_set(error, ENOTSUP,
-					   RTE_FLOW_ERROR_TYPE_ACTION,
-					   actions,
-					   "RSS cannot be used with "
-					   "the current configuration");
-				return -rte_errno;
-			}
-			if (!priv->isolated) {
-				rte_flow_error_set(error, ENOTSUP,
-					   RTE_FLOW_ERROR_TYPE_ACTION,
-					   actions,
-					   "RSS cannot be used without "
-					   "isolated mode");
-				return -rte_errno;
-			}
-			if (!rte_is_power_of_2(rss->num)) {
-				rte_flow_error_set(error, ENOTSUP,
-					   RTE_FLOW_ERROR_TYPE_ACTION,
-					   actions,
-					   "the number of queues "
-					   "should be power of two");
-				return -rte_errno;
-			}
-			if (priv->max_rss_tbl_sz < rss->num) {
-				rte_flow_error_set(error, ENOTSUP,
-					   RTE_FLOW_ERROR_TYPE_ACTION,
-					   actions,
-					   "the number of queues "
-					   "is too large");
-				return -rte_errno;
-			}
-			/* checking indexes array */
-			ierr = 0;
-			for (i = 0; i < rss->num; ++i) {
-				int j;
-				if (rss->queue[i] >= priv->rxqs_n)
-					ierr = 1;
-				/*
-				 * Prevent the user from specifying
-				 * the same queue twice in the RSS array.
-				 */
-				for (j = i + 1; j < rss->num && !ierr; ++j)
-					if (rss->queue[j] == rss->queue[i])
-						ierr = 1;
-				if (ierr) {
-					rte_flow_error_set(
-						error,
-						ENOTSUP,
-						RTE_FLOW_ERROR_TYPE_HANDLE,
-						NULL,
-						"RSS action only supports "
-						"unique queue indices "
-						"in a list");
-					return -rte_errno;
-				}
-			}
-			action.queue = 1;
-			action.queues_n = rss->num;
-			for (i = 0; i < rss->num; ++i)
-				action.queues[i] = rss->queue[i];
 		} else {
 			goto exit_action_not_supported;
 		}
@@ -769,7 +721,7 @@ exit_action_not_supported:
  * @see rte_flow_validate()
  * @see rte_flow_ops
  */
-int
+static int
 mlx4_flow_validate(struct rte_eth_dev *dev,
 		   const struct rte_flow_attr *attr,
 		   const struct rte_flow_item items[],
@@ -777,13 +729,9 @@ mlx4_flow_validate(struct rte_eth_dev *dev,
 		   struct rte_flow_error *error)
 {
 	struct priv *priv = dev->data->dev_private;
-	int ret;
 	struct mlx4_flow flow = { .offset = sizeof(struct ibv_flow_attr) };
 
-	priv_lock(priv);
-	ret = priv_flow_validate(priv, attr, items, actions, error, &flow);
-	priv_unlock(priv);
-	return ret;
+	return mlx4_flow_prepare(priv, attr, items, actions, error, &flow);
 }
 
 /**
@@ -826,29 +774,21 @@ mlx4_flow_create_drop_queue(struct priv *priv)
 		ERROR("Cannot allocate memory for drop struct");
 		goto err;
 	}
-	cq = ibv_exp_create_cq(priv->ctx, 1, NULL, NULL, 0,
-			      &(struct ibv_exp_cq_init_attr){
-					.comp_mask = 0,
-			      });
+	cq = ibv_create_cq(priv->ctx, 1, NULL, NULL, 0);
 	if (!cq) {
 		ERROR("Cannot create drop CQ");
 		goto err_create_cq;
 	}
-	qp = ibv_exp_create_qp(priv->ctx,
-			      &(struct ibv_exp_qp_init_attr){
-					.send_cq = cq,
-					.recv_cq = cq,
-					.cap = {
-						.max_recv_wr = 1,
-						.max_recv_sge = 1,
-					},
-					.qp_type = IBV_QPT_RAW_PACKET,
-					.comp_mask =
-						IBV_EXP_QP_INIT_ATTR_PD |
-						IBV_EXP_QP_INIT_ATTR_PORT,
-					.pd = priv->pd,
-					.port_num = priv->port,
-			      });
+	qp = ibv_create_qp(priv->pd,
+			   &(struct ibv_qp_init_attr){
+				.send_cq = cq,
+				.recv_cq = cq,
+				.cap = {
+					.max_recv_wr = 1,
+					.max_recv_sge = 1,
+				},
+				.qp_type = IBV_QPT_RAW_PACKET,
+			   });
 	if (!qp) {
 		ERROR("Cannot create drop QP");
 		goto err_create_qp;
@@ -868,82 +808,6 @@ err:
 }
 
 /**
- * Get RSS parent rxq structure for given queues.
- *
- * Creates a new or returns an existed one.
- *
- * @param priv
- *   Pointer to private structure.
- * @param queues
- *   queues indices array, NULL in default RSS case.
- * @param children_n
- *   the size of queues array.
- *
- * @return
- *   Pointer to a parent rxq structure, NULL on failure.
- */
-static struct rxq *
-priv_parent_get(struct priv *priv,
-		uint16_t queues[],
-		uint16_t children_n,
-		struct rte_flow_error *error)
-{
-	unsigned int i;
-	struct rxq *parent;
-
-	for (parent = LIST_FIRST(&priv->parents);
-	     parent;
-	     parent = LIST_NEXT(parent, next)) {
-		unsigned int same = 0;
-		unsigned int overlap = 0;
-
-		/*
-		 * Find out whether an appropriate parent queue already exists
-		 * and can be reused, otherwise make sure there are no overlaps.
-		 */
-		for (i = 0; i < children_n; ++i) {
-			unsigned int j;
-
-			for (j = 0; j < parent->rss.queues_n; ++j) {
-				if (parent->rss.queues[j] != queues[i])
-					continue;
-				++overlap;
-				if (i == j)
-					++same;
-			}
-		}
-		if (same == children_n &&
-			children_n == parent->rss.queues_n)
-			return parent;
-		else if (overlap)
-			goto error;
-	}
-	/* Exclude the cases when some QPs were created without RSS */
-	for (i = 0; i < children_n; ++i) {
-		struct rxq *rxq = (*priv->rxqs)[queues[i]];
-		if (rxq->qp)
-			goto error;
-	}
-	parent = priv_parent_create(priv, queues, children_n);
-	if (!parent) {
-		rte_flow_error_set(error,
-				   ENOMEM, RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
-				   NULL, "flow rule creation failure");
-		return NULL;
-	}
-	return parent;
-
-error:
-	rte_flow_error_set(error,
-			   EEXIST,
-			   RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
-			   NULL,
-			   "sharing a queue between several"
-			   " RSS groups is not supported");
-	return NULL;
-}
-
-/**
  * Complete flow rule creation.
  *
  * @param priv
@@ -959,14 +823,13 @@ error:
  *   A flow if the rule could be created.
  */
 static struct rte_flow *
-priv_flow_create_action_queue(struct priv *priv,
+mlx4_flow_create_action_queue(struct priv *priv,
 			      struct ibv_flow_attr *ibv_attr,
 			      struct mlx4_flow_action *action,
 			      struct rte_flow_error *error)
 {
 	struct ibv_qp *qp;
 	struct rte_flow *rte_flow;
-	struct rxq *rxq_parent = NULL;
 
 	assert(priv->pd);
 	assert(priv->ctx);
@@ -979,39 +842,9 @@ priv_flow_create_action_queue(struct priv *priv,
 	if (action->drop) {
 		qp = priv->flow_drop_queue ? priv->flow_drop_queue->qp : NULL;
 	} else {
-		int ret;
-		unsigned int i;
-		struct rxq *rxq = NULL;
+		struct rxq *rxq = priv->dev->data->rx_queues[action->queue_id];
 
-		if (action->queues_n > 1) {
-			rxq_parent = priv_parent_get(priv, action->queues,
-						     action->queues_n, error);
-			if (!rxq_parent)
-				goto error;
-		}
-		for (i = 0; i < action->queues_n; ++i) {
-			rxq = (*priv->rxqs)[action->queues[i]];
-			/*
-			 * In case of isolated mode we postpone
-			 * ibv receive queue creation till the first
-			 * rte_flow rule will be applied on that queue.
-			 */
-			if (!rxq->qp) {
-				assert(priv->isolated);
-				ret = rxq_create_qp(rxq, rxq->elts_n,
-						    0, 0, rxq_parent);
-				if (ret) {
-					rte_flow_error_set(
-						error,
-						ENOMEM,
-						RTE_FLOW_ERROR_TYPE_HANDLE,
-						NULL,
-						"flow rule creation failure");
-					goto error;
-				}
-			}
-		}
-		qp = action->queues_n > 1 ? rxq_parent->qp : rxq->qp;
+		qp = rxq->qp;
 		rte_flow->qp = qp;
 	}
 	rte_flow->ibv_attr = ibv_attr;
@@ -1024,44 +857,31 @@ priv_flow_create_action_queue(struct priv *priv,
 		goto error;
 	}
 	return rte_flow;
-
 error:
-	if (rxq_parent)
-		rxq_parent_cleanup(rxq_parent);
 	rte_free(rte_flow);
 	return NULL;
 }
 
 /**
- * Convert a flow.
+ * Create a flow.
  *
- * @param priv
- *   Pointer to private structure.
- * @param[in] attr
- *   Flow rule attributes.
- * @param[in] items
- *   Pattern specification (list terminated by the END pattern item).
- * @param[in] actions
- *   Associated actions (list terminated by the END action).
- * @param[out] error
- *   Perform verbose error reporting if not NULL.
- *
- * @return
- *   A flow on success, NULL otherwise.
+ * @see rte_flow_create()
+ * @see rte_flow_ops
  */
 static struct rte_flow *
-priv_flow_create(struct priv *priv,
+mlx4_flow_create(struct rte_eth_dev *dev,
 		 const struct rte_flow_attr *attr,
 		 const struct rte_flow_item items[],
 		 const struct rte_flow_action actions[],
 		 struct rte_flow_error *error)
 {
+	struct priv *priv = dev->data->dev_private;
 	struct rte_flow *rte_flow;
 	struct mlx4_flow_action action;
 	struct mlx4_flow flow = { .offset = sizeof(struct ibv_flow_attr), };
 	int err;
 
-	err = priv_flow_validate(priv, attr, items, actions, error, &flow);
+	err = mlx4_flow_prepare(priv, attr, items, actions, error, &flow);
 	if (err)
 		return NULL;
 	flow.ibv_attr = rte_malloc(__func__, flow.offset, 0);
@@ -1080,8 +900,8 @@ priv_flow_create(struct priv *priv,
 		.port = priv->port,
 		.flags = 0,
 	};
-	claim_zero(priv_flow_validate(priv, attr, items, actions,
-				      error, &flow));
+	claim_zero(mlx4_flow_prepare(priv, attr, items, actions,
+				     error, &flow));
 	action = (struct mlx4_flow_action){
 		.queue = 0,
 		.drop = 0,
@@ -1091,22 +911,11 @@ priv_flow_create(struct priv *priv,
 			continue;
 		} else if (actions->type == RTE_FLOW_ACTION_TYPE_QUEUE) {
 			action.queue = 1;
-			action.queues_n = 1;
-			action.queues[0] =
+			action.queue_id =
 				((const struct rte_flow_action_queue *)
 				 actions->conf)->index;
 		} else if (actions->type == RTE_FLOW_ACTION_TYPE_DROP) {
 			action.drop = 1;
-		} else if (actions->type == RTE_FLOW_ACTION_TYPE_RSS) {
-			unsigned int i;
-			const struct rte_flow_action_rss *rss =
-				(const struct rte_flow_action_rss *)
-				 actions->conf;
-
-			action.queue = 1;
-			action.queues_n = rss->num;
-			for (i = 0; i < rss->num; ++i)
-				action.queues[i] = rss->queue[i];
 		} else {
 			rte_flow_error_set(error, ENOTSUP,
 					   RTE_FLOW_ERROR_TYPE_ACTION,
@@ -1114,96 +923,43 @@ priv_flow_create(struct priv *priv,
 			goto exit;
 		}
 	}
-	rte_flow = priv_flow_create_action_queue(priv, flow.ibv_attr,
+	rte_flow = mlx4_flow_create_action_queue(priv, flow.ibv_attr,
 						 &action, error);
-	if (rte_flow)
+	if (rte_flow) {
+		LIST_INSERT_HEAD(&priv->flows, rte_flow, next);
+		DEBUG("Flow created %p", (void *)rte_flow);
 		return rte_flow;
+	}
 exit:
 	rte_free(flow.ibv_attr);
 	return NULL;
 }
 
 /**
- * Create a flow.
+ * Configure isolated mode.
  *
- * @see rte_flow_create()
+ * @see rte_flow_isolate()
  * @see rte_flow_ops
  */
-struct rte_flow *
-mlx4_flow_create(struct rte_eth_dev *dev,
-		 const struct rte_flow_attr *attr,
-		 const struct rte_flow_item items[],
-		 const struct rte_flow_action actions[],
-		 struct rte_flow_error *error)
-{
-	struct priv *priv = dev->data->dev_private;
-	struct rte_flow *flow;
-
-	priv_lock(priv);
-	flow = priv_flow_create(priv, attr, items, actions, error);
-	if (flow) {
-		LIST_INSERT_HEAD(&priv->flows, flow, next);
-		DEBUG("Flow created %p", (void *)flow);
-	}
-	priv_unlock(priv);
-	return flow;
-}
-
-/**
- * @see rte_flow_isolate()
- *
- * Must be done before calling dev_configure().
- *
- * @param dev
- *   Pointer to the ethernet device structure.
- * @param enable
- *   Nonzero to enter isolated mode, attempt to leave it otherwise.
- * @param[out] error
- *   Perform verbose error reporting if not NULL. PMDs initialize this
- *   structure in case of error only.
- *
- * @return
- *   0 on success, a negative value on error.
- */
-int
+static int
 mlx4_flow_isolate(struct rte_eth_dev *dev,
 		  int enable,
 		  struct rte_flow_error *error)
 {
 	struct priv *priv = dev->data->dev_private;
 
-	priv_lock(priv);
-	if (priv->rxqs) {
-		rte_flow_error_set(error, ENOTSUP,
-				   RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
-				   NULL, "isolated mode must be set"
-				   " before configuring the device");
-		priv_unlock(priv);
-		return -rte_errno;
-	}
+	if (!!enable == !!priv->isolated)
+		return 0;
 	priv->isolated = !!enable;
-	priv_unlock(priv);
+	if (enable) {
+		mlx4_mac_addr_del(priv);
+	} else if (mlx4_mac_addr_add(priv) < 0) {
+		priv->isolated = 1;
+		return -rte_flow_error_set(error, rte_errno,
+					   RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
+					   NULL, "cannot leave isolated mode");
+	}
 	return 0;
-}
-
-/**
- * Destroy a flow.
- *
- * @param priv
- *   Pointer to private structure.
- * @param[in] flow
- *   Flow to destroy.
- */
-static void
-priv_flow_destroy(struct priv *priv, struct rte_flow *flow)
-{
-	(void)priv;
-	LIST_REMOVE(flow, next);
-	if (flow->ibv_flow)
-		claim_zero(ibv_destroy_flow(flow->ibv_flow));
-	rte_free(flow->ibv_attr);
-	DEBUG("Flow destroyed %p", (void *)flow);
-	rte_free(flow);
 }
 
 /**
@@ -1212,35 +968,20 @@ priv_flow_destroy(struct priv *priv, struct rte_flow *flow)
  * @see rte_flow_destroy()
  * @see rte_flow_ops
  */
-int
+static int
 mlx4_flow_destroy(struct rte_eth_dev *dev,
 		  struct rte_flow *flow,
 		  struct rte_flow_error *error)
 {
-	struct priv *priv = dev->data->dev_private;
-
+	(void)dev;
 	(void)error;
-	priv_lock(priv);
-	priv_flow_destroy(priv, flow);
-	priv_unlock(priv);
+	LIST_REMOVE(flow, next);
+	if (flow->ibv_flow)
+		claim_zero(ibv_destroy_flow(flow->ibv_flow));
+	rte_free(flow->ibv_attr);
+	DEBUG("Flow destroyed %p", (void *)flow);
+	rte_free(flow);
 	return 0;
-}
-
-/**
- * Destroy all flows.
- *
- * @param priv
- *   Pointer to private structure.
- */
-static void
-priv_flow_flush(struct priv *priv)
-{
-	while (!LIST_EMPTY(&priv->flows)) {
-		struct rte_flow *flow;
-
-		flow = LIST_FIRST(&priv->flows);
-		priv_flow_destroy(priv, flow);
-	}
 }
 
 /**
@@ -1249,16 +990,18 @@ priv_flow_flush(struct priv *priv)
  * @see rte_flow_flush()
  * @see rte_flow_ops
  */
-int
+static int
 mlx4_flow_flush(struct rte_eth_dev *dev,
 		struct rte_flow_error *error)
 {
 	struct priv *priv = dev->data->dev_private;
 
-	(void)error;
-	priv_lock(priv);
-	priv_flow_flush(priv);
-	priv_unlock(priv);
+	while (!LIST_EMPTY(&priv->flows)) {
+		struct rte_flow *flow;
+
+		flow = LIST_FIRST(&priv->flows);
+		mlx4_flow_destroy(dev, flow, error);
+	}
 	return 0;
 }
 
@@ -1271,7 +1014,7 @@ mlx4_flow_flush(struct rte_eth_dev *dev,
  *   Pointer to private structure.
  */
 void
-mlx4_priv_flow_stop(struct priv *priv)
+mlx4_flow_stop(struct priv *priv)
 {
 	struct rte_flow *flow;
 
@@ -1295,7 +1038,7 @@ mlx4_priv_flow_stop(struct priv *priv)
  *   0 on success, a errno value otherwise and rte_errno is set.
  */
 int
-mlx4_priv_flow_start(struct priv *priv)
+mlx4_flow_start(struct priv *priv)
 {
 	int ret;
 	struct ibv_qp *qp;
@@ -1317,4 +1060,48 @@ mlx4_priv_flow_start(struct priv *priv)
 		DEBUG("Flow %p applied", (void *)flow);
 	}
 	return 0;
+}
+
+static const struct rte_flow_ops mlx4_flow_ops = {
+	.validate = mlx4_flow_validate,
+	.create = mlx4_flow_create,
+	.destroy = mlx4_flow_destroy,
+	.flush = mlx4_flow_flush,
+	.isolate = mlx4_flow_isolate,
+};
+
+/**
+ * Manage filter operations.
+ *
+ * @param dev
+ *   Pointer to Ethernet device structure.
+ * @param filter_type
+ *   Filter type.
+ * @param filter_op
+ *   Operation to perform.
+ * @param arg
+ *   Pointer to operation-specific structure.
+ *
+ * @return
+ *   0 on success, negative errno value otherwise and rte_errno is set.
+ */
+int
+mlx4_filter_ctrl(struct rte_eth_dev *dev,
+		 enum rte_filter_type filter_type,
+		 enum rte_filter_op filter_op,
+		 void *arg)
+{
+	switch (filter_type) {
+	case RTE_ETH_FILTER_GENERIC:
+		if (filter_op != RTE_ETH_FILTER_GET)
+			break;
+		*(const void **)arg = &mlx4_flow_ops;
+		return 0;
+	default:
+		ERROR("%p: filter type (%d) not supported",
+		      (void *)dev, filter_type);
+		break;
+	}
+	rte_errno = ENOTSUP;
+	return -rte_errno;
 }

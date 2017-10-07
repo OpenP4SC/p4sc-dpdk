@@ -309,6 +309,33 @@ enum rte_flow_item_type {
 	 * See struct rte_flow_item_fuzzy.
 	 */
 	RTE_FLOW_ITEM_TYPE_FUZZY,
+
+	/**
+	 * Matches a GTP header.
+	 *
+	 * Configure flow for GTP packets.
+	 *
+	 * See struct rte_flow_item_gtp.
+	 */
+	RTE_FLOW_ITEM_TYPE_GTP,
+
+	/**
+	 * Matches a GTP header.
+	 *
+	 * Configure flow for GTP-C packets.
+	 *
+	 * See struct rte_flow_item_gtp.
+	 */
+	RTE_FLOW_ITEM_TYPE_GTPC,
+
+	/**
+	 * Matches a GTP header.
+	 *
+	 * Configure flow for GTP-U packets.
+	 *
+	 * See struct rte_flow_item_gtp.
+	 */
+	RTE_FLOW_ITEM_TYPE_GTPU,
 };
 
 /**
@@ -735,6 +762,31 @@ static const struct rte_flow_item_fuzzy rte_flow_item_fuzzy_mask = {
 #endif
 
 /**
+ * RTE_FLOW_ITEM_TYPE_GTP.
+ *
+ * Matches a GTPv1 header.
+ */
+struct rte_flow_item_gtp {
+	/**
+	 * Version (3b), protocol type (1b), reserved (1b),
+	 * Extension header flag (1b),
+	 * Sequence number flag (1b),
+	 * N-PDU number flag (1b).
+	 */
+	uint8_t v_pt_rsv_flags;
+	uint8_t msg_type; /**< Message type. */
+	rte_be16_t msg_len; /**< Message length. */
+	rte_be32_t teid; /**< Tunnel endpoint identifier. */
+};
+
+/** Default mask for RTE_FLOW_ITEM_TYPE_GTP. */
+#ifndef __cplusplus
+static const struct rte_flow_item_gtp rte_flow_item_gtp_mask = {
+	.teid = RTE_BE32(0xffffffff),
+};
+#endif
+
+/**
  * Matching pattern item definition.
  *
  * A pattern is formed by stacking items starting from the lowest protocol
@@ -1116,7 +1168,7 @@ struct rte_flow_error {
  *   state (see rte_eth_dev_rx_queue_stop() and rte_eth_dev_stop()).
  */
 int
-rte_flow_validate(uint8_t port_id,
+rte_flow_validate(uint16_t port_id,
 		  const struct rte_flow_attr *attr,
 		  const struct rte_flow_item pattern[],
 		  const struct rte_flow_action actions[],
@@ -1143,7 +1195,7 @@ rte_flow_validate(uint8_t port_id,
  *   rte_flow_validate().
  */
 struct rte_flow *
-rte_flow_create(uint8_t port_id,
+rte_flow_create(uint16_t port_id,
 		const struct rte_flow_attr *attr,
 		const struct rte_flow_item pattern[],
 		const struct rte_flow_action actions[],
@@ -1170,7 +1222,7 @@ rte_flow_create(uint8_t port_id,
  *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 int
-rte_flow_destroy(uint8_t port_id,
+rte_flow_destroy(uint16_t port_id,
 		 struct rte_flow *flow,
 		 struct rte_flow_error *error);
 
@@ -1191,7 +1243,7 @@ rte_flow_destroy(uint8_t port_id,
  *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 int
-rte_flow_flush(uint8_t port_id,
+rte_flow_flush(uint16_t port_id,
 	       struct rte_flow_error *error);
 
 /**
@@ -1219,7 +1271,7 @@ rte_flow_flush(uint8_t port_id,
  *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 int
-rte_flow_query(uint8_t port_id,
+rte_flow_query(uint16_t port_id,
 	       struct rte_flow *flow,
 	       enum rte_flow_action_type action,
 	       void *data,
@@ -1267,7 +1319,7 @@ rte_flow_query(uint8_t port_id,
  *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 int
-rte_flow_isolate(uint8_t port_id, int set, struct rte_flow_error *error);
+rte_flow_isolate(uint16_t port_id, int set, struct rte_flow_error *error);
 
 /**
  * Generic flow representation.

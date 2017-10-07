@@ -706,7 +706,10 @@ vfio_type1_dma_map(int vfio_container_fd)
 		dma_map.argsz = sizeof(struct vfio_iommu_type1_dma_map);
 		dma_map.vaddr = ms[i].addr_64;
 		dma_map.size = ms[i].len;
-		dma_map.iova = ms[i].phys_addr;
+		if (rte_eal_iova_mode() == RTE_IOVA_VA)
+			dma_map.iova = dma_map.vaddr;
+		else
+			dma_map.iova = ms[i].phys_addr;
 		dma_map.flags = VFIO_DMA_MAP_FLAG_READ | VFIO_DMA_MAP_FLAG_WRITE;
 
 		ret = ioctl(vfio_container_fd, VFIO_IOMMU_MAP_DMA, &dma_map);
@@ -792,7 +795,10 @@ vfio_spapr_dma_map(int vfio_container_fd)
 		dma_map.argsz = sizeof(struct vfio_iommu_type1_dma_map);
 		dma_map.vaddr = ms[i].addr_64;
 		dma_map.size = ms[i].len;
-		dma_map.iova = ms[i].phys_addr;
+		if (rte_eal_iova_mode() == RTE_IOVA_VA)
+			dma_map.iova = dma_map.vaddr;
+		else
+			dma_map.iova = ms[i].phys_addr;
 		dma_map.flags = VFIO_DMA_MAP_FLAG_READ |
 				 VFIO_DMA_MAP_FLAG_WRITE;
 
@@ -814,6 +820,25 @@ vfio_noiommu_dma_map(int __rte_unused vfio_container_fd)
 {
 	/* No-IOMMU mode does not need DMA mapping */
 	return 0;
+}
+
+int
+vfio_noiommu_is_enabled(void)
+{
+	int fd, ret, cnt __rte_unused;
+	char c;
+
+	ret = -1;
+	fd = open(VFIO_NOIOMMU_MODE, O_RDONLY);
+	if (fd < 0)
+		return -1;
+
+	cnt = read(fd, &c, 1);
+	if (c == 'Y')
+		ret = 1;
+
+	close(fd);
+	return ret;
 }
 
 #endif

@@ -41,7 +41,7 @@
 #include "rte_pmd_i40e.h"
 
 int
-rte_pmd_i40e_ping_vfs(uint8_t port, uint16_t vf)
+rte_pmd_i40e_ping_vfs(uint16_t port, uint16_t vf)
 {
 	struct rte_eth_dev *dev;
 	struct i40e_pf *pf;
@@ -66,7 +66,7 @@ rte_pmd_i40e_ping_vfs(uint8_t port, uint16_t vf)
 }
 
 int
-rte_pmd_i40e_set_vf_mac_anti_spoof(uint8_t port, uint16_t vf_id, uint8_t on)
+rte_pmd_i40e_set_vf_mac_anti_spoof(uint16_t port, uint16_t vf_id, uint8_t on)
 {
 	struct rte_eth_dev *dev;
 	struct i40e_pf *pf;
@@ -117,7 +117,7 @@ rte_pmd_i40e_set_vf_mac_anti_spoof(uint8_t port, uint16_t vf_id, uint8_t on)
 		vsi->info.sec_flags &= ~I40E_AQ_VSI_SEC_FLAG_ENABLE_MAC_CHK;
 
 	memset(&ctxt, 0, sizeof(ctxt));
-	(void)rte_memcpy(&ctxt.info, &vsi->info, sizeof(vsi->info));
+	rte_memcpy(&ctxt.info, &vsi->info, sizeof(vsi->info));
 	ctxt.seid = vsi->seid;
 
 	hw = I40E_VSI_TO_HW(vsi);
@@ -170,7 +170,7 @@ i40e_add_rm_all_vlan_filter(struct i40e_vsi *vsi, uint8_t add)
 }
 
 int
-rte_pmd_i40e_set_vf_vlan_anti_spoof(uint8_t port, uint16_t vf_id, uint8_t on)
+rte_pmd_i40e_set_vf_vlan_anti_spoof(uint16_t port, uint16_t vf_id, uint8_t on)
 {
 	struct rte_eth_dev *dev;
 	struct i40e_pf *pf;
@@ -219,7 +219,7 @@ rte_pmd_i40e_set_vf_vlan_anti_spoof(uint8_t port, uint16_t vf_id, uint8_t on)
 		vsi->info.sec_flags &= ~I40E_AQ_VSI_SEC_FLAG_ENABLE_VLAN_CHK;
 
 	memset(&ctxt, 0, sizeof(ctxt));
-	(void)rte_memcpy(&ctxt.info, &vsi->info, sizeof(vsi->info));
+	rte_memcpy(&ctxt.info, &vsi->info, sizeof(vsi->info));
 	ctxt.seid = vsi->seid;
 
 	hw = I40E_VSI_TO_HW(vsi);
@@ -264,7 +264,7 @@ i40e_vsi_rm_mac_filter(struct i40e_vsi *vsi)
 
 		for (i = 0; i < vlan_num; i++) {
 			mv_f[i].filter_type = filter_type;
-			(void)rte_memcpy(&mv_f[i].macaddr,
+			rte_memcpy(&mv_f[i].macaddr,
 					 &f->mac_info.mac_addr,
 					 ETH_ADDR_LEN);
 		}
@@ -325,7 +325,7 @@ i40e_vsi_restore_mac_filter(struct i40e_vsi *vsi)
 
 		for (i = 0; i < vlan_num; i++) {
 			mv_f[i].filter_type = f->mac_info.filter_type;
-			(void)rte_memcpy(&mv_f[i].macaddr,
+			rte_memcpy(&mv_f[i].macaddr,
 					 &f->mac_info.mac_addr,
 					 ETH_ADDR_LEN);
 		}
@@ -407,7 +407,7 @@ i40e_vsi_set_tx_loopback(struct i40e_vsi *vsi, uint8_t on)
 		vsi->info.switch_id &= ~I40E_AQ_VSI_SW_ID_FLAG_ALLOW_LB;
 
 	memset(&ctxt, 0, sizeof(ctxt));
-	(void)rte_memcpy(&ctxt.info, &vsi->info, sizeof(vsi->info));
+	rte_memcpy(&ctxt.info, &vsi->info, sizeof(vsi->info));
 	ctxt.seid = vsi->seid;
 
 	ret = i40e_aq_update_vsi_params(hw, &ctxt, NULL);
@@ -430,7 +430,7 @@ i40e_vsi_set_tx_loopback(struct i40e_vsi *vsi, uint8_t on)
 }
 
 int
-rte_pmd_i40e_set_tx_loopback(uint8_t port, uint8_t on)
+rte_pmd_i40e_set_tx_loopback(uint16_t port, uint8_t on)
 {
 	struct rte_eth_dev *dev;
 	struct i40e_pf *pf;
@@ -473,7 +473,7 @@ rte_pmd_i40e_set_tx_loopback(uint8_t port, uint8_t on)
 }
 
 int
-rte_pmd_i40e_set_vf_unicast_promisc(uint8_t port, uint16_t vf_id, uint8_t on)
+rte_pmd_i40e_set_vf_unicast_promisc(uint16_t port, uint16_t vf_id, uint8_t on)
 {
 	struct rte_eth_dev *dev;
 	struct i40e_pf *pf;
@@ -514,7 +514,7 @@ rte_pmd_i40e_set_vf_unicast_promisc(uint8_t port, uint16_t vf_id, uint8_t on)
 }
 
 int
-rte_pmd_i40e_set_vf_multicast_promisc(uint8_t port, uint16_t vf_id, uint8_t on)
+rte_pmd_i40e_set_vf_multicast_promisc(uint16_t port, uint16_t vf_id, uint8_t on)
 {
 	struct rte_eth_dev *dev;
 	struct i40e_pf *pf;
@@ -555,7 +555,7 @@ rte_pmd_i40e_set_vf_multicast_promisc(uint8_t port, uint16_t vf_id, uint8_t on)
 }
 
 int
-rte_pmd_i40e_set_vf_mac_addr(uint8_t port, uint16_t vf_id,
+rte_pmd_i40e_set_vf_mac_addr(uint16_t port, uint16_t vf_id,
 			     struct ether_addr *mac_addr)
 {
 	struct i40e_mac_filter *f;
@@ -591,14 +591,16 @@ rte_pmd_i40e_set_vf_mac_addr(uint8_t port, uint16_t vf_id,
 
 	/* Remove all existing mac */
 	TAILQ_FOREACH_SAFE(f, &vsi->mac_list, next, temp)
-		i40e_vsi_delete_mac(vsi, &f->mac_info.mac_addr);
+		if (i40e_vsi_delete_mac(vsi, &f->mac_info.mac_addr)
+				!= I40E_SUCCESS)
+			PMD_DRV_LOG(WARNING, "Delete MAC failed");
 
 	return 0;
 }
 
 /* Set vlan strip on/off for specific VF from host */
 int
-rte_pmd_i40e_set_vf_vlan_stripq(uint8_t port, uint16_t vf_id, uint8_t on)
+rte_pmd_i40e_set_vf_vlan_stripq(uint16_t port, uint16_t vf_id, uint8_t on)
 {
 	struct rte_eth_dev *dev;
 	struct i40e_pf *pf;
@@ -633,7 +635,7 @@ rte_pmd_i40e_set_vf_vlan_stripq(uint8_t port, uint16_t vf_id, uint8_t on)
 	return ret;
 }
 
-int rte_pmd_i40e_set_vf_vlan_insert(uint8_t port, uint16_t vf_id,
+int rte_pmd_i40e_set_vf_vlan_insert(uint16_t port, uint16_t vf_id,
 				    uint16_t vlan_id)
 {
 	struct rte_eth_dev *dev;
@@ -685,7 +687,7 @@ int rte_pmd_i40e_set_vf_vlan_insert(uint8_t port, uint16_t vf_id,
 		vsi->info.port_vlan_flags &= ~I40E_AQ_VSI_PVLAN_INSERT_PVID;
 
 	memset(&ctxt, 0, sizeof(ctxt));
-	(void)rte_memcpy(&ctxt.info, &vsi->info, sizeof(vsi->info));
+	rte_memcpy(&ctxt.info, &vsi->info, sizeof(vsi->info));
 	ctxt.seid = vsi->seid;
 
 	hw = I40E_VSI_TO_HW(vsi);
@@ -698,7 +700,7 @@ int rte_pmd_i40e_set_vf_vlan_insert(uint8_t port, uint16_t vf_id,
 	return ret;
 }
 
-int rte_pmd_i40e_set_vf_broadcast(uint8_t port, uint16_t vf_id,
+int rte_pmd_i40e_set_vf_broadcast(uint16_t port, uint16_t vf_id,
 				  uint8_t on)
 {
 	struct rte_eth_dev *dev;
@@ -747,7 +749,7 @@ int rte_pmd_i40e_set_vf_broadcast(uint8_t port, uint16_t vf_id,
 	}
 
 	if (on) {
-		(void)rte_memcpy(&filter.mac_addr, &broadcast, ETHER_ADDR_LEN);
+		rte_memcpy(&filter.mac_addr, &broadcast, ETHER_ADDR_LEN);
 		filter.filter_type = RTE_MACVLAN_PERFECT_MATCH;
 		ret = i40e_vsi_add_mac(vsi, &filter);
 	} else {
@@ -764,7 +766,7 @@ int rte_pmd_i40e_set_vf_broadcast(uint8_t port, uint16_t vf_id,
 	return ret;
 }
 
-int rte_pmd_i40e_set_vf_vlan_tag(uint8_t port, uint16_t vf_id, uint8_t on)
+int rte_pmd_i40e_set_vf_vlan_tag(uint16_t port, uint16_t vf_id, uint8_t on)
 {
 	struct rte_eth_dev *dev;
 	struct i40e_pf *pf;
@@ -819,7 +821,7 @@ int rte_pmd_i40e_set_vf_vlan_tag(uint8_t port, uint16_t vf_id, uint8_t on)
 	}
 
 	memset(&ctxt, 0, sizeof(ctxt));
-	(void)rte_memcpy(&ctxt.info, &vsi->info, sizeof(vsi->info));
+	rte_memcpy(&ctxt.info, &vsi->info, sizeof(vsi->info));
 	ctxt.seid = vsi->seid;
 
 	hw = I40E_VSI_TO_HW(vsi);
@@ -858,7 +860,7 @@ i40e_vlan_filter_count(struct i40e_vsi *vsi)
 	return count;
 }
 
-int rte_pmd_i40e_set_vf_vlan_filter(uint8_t port, uint16_t vlan_id,
+int rte_pmd_i40e_set_vf_vlan_filter(uint16_t port, uint16_t vlan_id,
 				    uint64_t vf_mask, uint8_t on)
 {
 	struct rte_eth_dev *dev;
@@ -941,7 +943,7 @@ int rte_pmd_i40e_set_vf_vlan_filter(uint8_t port, uint16_t vlan_id,
 }
 
 int
-rte_pmd_i40e_get_vf_stats(uint8_t port,
+rte_pmd_i40e_get_vf_stats(uint16_t port,
 			  uint16_t vf_id,
 			  struct rte_eth_stats *stats)
 {
@@ -986,7 +988,7 @@ rte_pmd_i40e_get_vf_stats(uint8_t port,
 }
 
 int
-rte_pmd_i40e_reset_vf_stats(uint8_t port,
+rte_pmd_i40e_reset_vf_stats(uint16_t port,
 			    uint16_t vf_id)
 {
 	struct rte_eth_dev *dev;
@@ -1020,7 +1022,7 @@ rte_pmd_i40e_reset_vf_stats(uint8_t port,
 }
 
 int
-rte_pmd_i40e_set_vf_max_bw(uint8_t port, uint16_t vf_id, uint32_t bw)
+rte_pmd_i40e_set_vf_max_bw(uint16_t port, uint16_t vf_id, uint32_t bw)
 {
 	struct rte_eth_dev *dev;
 	struct i40e_pf *pf;
@@ -1109,7 +1111,7 @@ rte_pmd_i40e_set_vf_max_bw(uint8_t port, uint16_t vf_id, uint32_t bw)
 }
 
 int
-rte_pmd_i40e_set_vf_tc_bw_alloc(uint8_t port, uint16_t vf_id,
+rte_pmd_i40e_set_vf_tc_bw_alloc(uint16_t port, uint16_t vf_id,
 				uint8_t tc_num, uint8_t *bw_weight)
 {
 	struct rte_eth_dev *dev;
@@ -1223,7 +1225,7 @@ rte_pmd_i40e_set_vf_tc_bw_alloc(uint8_t port, uint16_t vf_id,
 }
 
 int
-rte_pmd_i40e_set_vf_tc_max_bw(uint8_t port, uint16_t vf_id,
+rte_pmd_i40e_set_vf_tc_max_bw(uint16_t port, uint16_t vf_id,
 			      uint8_t tc_no, uint32_t bw)
 {
 	struct rte_eth_dev *dev;
@@ -1341,7 +1343,7 @@ rte_pmd_i40e_set_vf_tc_max_bw(uint8_t port, uint16_t vf_id,
 }
 
 int
-rte_pmd_i40e_set_tc_strict_prio(uint8_t port, uint8_t tc_map)
+rte_pmd_i40e_set_tc_strict_prio(uint16_t port, uint8_t tc_map)
 {
 	struct rte_eth_dev *dev;
 	struct i40e_pf *pf;
@@ -1513,7 +1515,7 @@ i40e_add_rm_profile_info(struct i40e_hw *hw, uint8_t *profile_info_sec)
 
 /* Check if the profile info exists */
 static int
-i40e_check_profile_info(uint8_t port, uint8_t *profile_info_sec)
+i40e_check_profile_info(uint16_t port, uint8_t *profile_info_sec)
 {
 	struct rte_eth_dev *dev = &rte_eth_devices[port];
 	struct i40e_hw *hw = I40E_DEV_PRIVATE_TO_HW(dev->data->dev_private);
@@ -1557,7 +1559,7 @@ i40e_check_profile_info(uint8_t port, uint8_t *profile_info_sec)
 }
 
 int
-rte_pmd_i40e_process_ddp_package(uint8_t port, uint8_t *buff,
+rte_pmd_i40e_process_ddp_package(uint16_t port, uint8_t *buff,
 				 uint32_t size,
 				 enum rte_pmd_i40e_package_op op)
 {
@@ -1605,6 +1607,8 @@ rte_pmd_i40e_process_ddp_package(uint8_t port, uint8_t *buff,
 		PMD_DRV_LOG(ERR, "Segment_count should be 2 at least.");
 		return -EINVAL;
 	}
+
+	i40e_update_customized_info(dev, buff, size);
 
 	/* Find metadata segment */
 	metadata_seg_hdr = i40e_find_segment_in_package(SEGMENT_TYPE_METADATA,
@@ -1702,6 +1706,27 @@ rte_pmd_i40e_process_ddp_package(uint8_t port, uint8_t *buff,
 
 	rte_free(profile_info_sec);
 	return status;
+}
+
+/* Get number of tvl records in the section */
+static unsigned int
+i40e_get_tlv_section_size(struct i40e_profile_section_header *sec)
+{
+	unsigned int i, nb_rec, nb_tlv = 0;
+	struct i40e_profile_tlv_section_record *tlv;
+
+	if (!sec)
+		return nb_tlv;
+
+	/* get number of records in the section */
+	nb_rec = sec->section.size /
+				sizeof(struct i40e_profile_tlv_section_record);
+	for (i = 0; i < nb_rec; ) {
+		tlv = (struct i40e_profile_tlv_section_record *)&sec[1 + i];
+		i += tlv->len;
+		nb_tlv++;
+	}
+	return nb_tlv;
 }
 
 int rte_pmd_i40e_get_ddp_info(uint8_t *pkg_buff, uint32_t pkg_size,
@@ -1858,12 +1883,162 @@ int rte_pmd_i40e_get_ddp_info(uint8_t *pkg_buff, uint32_t pkg_size,
 		return I40E_SUCCESS;
 	}
 
+	/* get number of protocols */
+	if (type == RTE_PMD_I40E_PKG_INFO_PROTOCOL_NUM) {
+		struct i40e_profile_section_header *proto;
+
+		if (info_size < sizeof(uint32_t)) {
+			PMD_DRV_LOG(ERR, "Invalid information buffer size");
+			return -EINVAL;
+		}
+		proto = i40e_find_section_in_profile(SECTION_TYPE_PROTO,
+				(struct i40e_profile_segment *)i40e_seg_hdr);
+		*(uint32_t *)info_buff = i40e_get_tlv_section_size(proto);
+		return I40E_SUCCESS;
+	}
+
+	/* get list of protocols */
+	if (type == RTE_PMD_I40E_PKG_INFO_PROTOCOL_LIST) {
+		uint32_t i, j, nb_tlv, nb_rec, nb_proto_info;
+		struct rte_pmd_i40e_proto_info *pinfo;
+		struct i40e_profile_section_header *proto;
+		struct i40e_profile_tlv_section_record *tlv;
+
+		pinfo = (struct rte_pmd_i40e_proto_info *)info_buff;
+		nb_proto_info = info_size /
+					sizeof(struct rte_pmd_i40e_proto_info);
+		for (i = 0; i < nb_proto_info; i++) {
+			pinfo[i].proto_id = RTE_PMD_I40E_PROTO_UNUSED;
+			memset(pinfo[i].name, 0, RTE_PMD_I40E_DDP_NAME_SIZE);
+		}
+		proto = i40e_find_section_in_profile(SECTION_TYPE_PROTO,
+				(struct i40e_profile_segment *)i40e_seg_hdr);
+		nb_tlv = i40e_get_tlv_section_size(proto);
+		if (nb_tlv == 0)
+			return I40E_SUCCESS;
+		if (nb_proto_info < nb_tlv) {
+			PMD_DRV_LOG(ERR, "Invalid information buffer size");
+			return -EINVAL;
+		}
+		/* get number of records in the section */
+		nb_rec = proto->section.size /
+				sizeof(struct i40e_profile_tlv_section_record);
+		tlv = (struct i40e_profile_tlv_section_record *)&proto[1];
+		for (i = j = 0; i < nb_rec; j++) {
+			pinfo[j].proto_id = tlv->data[0];
+			strncpy(pinfo[j].name, (const char *)&tlv->data[1],
+				I40E_DDP_NAME_SIZE);
+			i += tlv->len;
+			tlv = &tlv[tlv->len];
+		}
+		return I40E_SUCCESS;
+	}
+
+	/* get number of packet classification types */
+	if (type == RTE_PMD_I40E_PKG_INFO_PCTYPE_NUM) {
+		struct i40e_profile_section_header *pctype;
+
+		if (info_size < sizeof(uint32_t)) {
+			PMD_DRV_LOG(ERR, "Invalid information buffer size");
+			return -EINVAL;
+		}
+		pctype = i40e_find_section_in_profile(SECTION_TYPE_PCTYPE,
+				(struct i40e_profile_segment *)i40e_seg_hdr);
+		*(uint32_t *)info_buff = i40e_get_tlv_section_size(pctype);
+		return I40E_SUCCESS;
+	}
+
+	/* get list of packet classification types */
+	if (type == RTE_PMD_I40E_PKG_INFO_PCTYPE_LIST) {
+		uint32_t i, j, nb_tlv, nb_rec, nb_proto_info;
+		struct rte_pmd_i40e_ptype_info *pinfo;
+		struct i40e_profile_section_header *pctype;
+		struct i40e_profile_tlv_section_record *tlv;
+
+		pinfo = (struct rte_pmd_i40e_ptype_info *)info_buff;
+		nb_proto_info = info_size /
+					sizeof(struct rte_pmd_i40e_ptype_info);
+		for (i = 0; i < nb_proto_info; i++)
+			memset(&pinfo[i], RTE_PMD_I40E_PROTO_UNUSED,
+			       sizeof(struct rte_pmd_i40e_ptype_info));
+		pctype = i40e_find_section_in_profile(SECTION_TYPE_PCTYPE,
+				(struct i40e_profile_segment *)i40e_seg_hdr);
+		nb_tlv = i40e_get_tlv_section_size(pctype);
+		if (nb_tlv == 0)
+			return I40E_SUCCESS;
+		if (nb_proto_info < nb_tlv) {
+			PMD_DRV_LOG(ERR, "Invalid information buffer size");
+			return -EINVAL;
+		}
+
+		/* get number of records in the section */
+		nb_rec = pctype->section.size /
+				sizeof(struct i40e_profile_tlv_section_record);
+		tlv = (struct i40e_profile_tlv_section_record *)&pctype[1];
+		for (i = j = 0; i < nb_rec; j++) {
+			memcpy(&pinfo[j], tlv->data,
+			       sizeof(struct rte_pmd_i40e_ptype_info));
+			i += tlv->len;
+			tlv = &tlv[tlv->len];
+		}
+		return I40E_SUCCESS;
+	}
+
+	/* get number of packet types */
+	if (type == RTE_PMD_I40E_PKG_INFO_PTYPE_NUM) {
+		struct i40e_profile_section_header *ptype;
+
+		if (info_size < sizeof(uint32_t)) {
+			PMD_DRV_LOG(ERR, "Invalid information buffer size");
+			return -EINVAL;
+		}
+		ptype = i40e_find_section_in_profile(SECTION_TYPE_PTYPE,
+				(struct i40e_profile_segment *)i40e_seg_hdr);
+		*(uint32_t *)info_buff = i40e_get_tlv_section_size(ptype);
+		return I40E_SUCCESS;
+	}
+
+	/* get list of packet types */
+	if (type == RTE_PMD_I40E_PKG_INFO_PTYPE_LIST) {
+		uint32_t i, j, nb_tlv, nb_rec, nb_proto_info;
+		struct rte_pmd_i40e_ptype_info *pinfo;
+		struct i40e_profile_section_header *ptype;
+		struct i40e_profile_tlv_section_record *tlv;
+
+		pinfo = (struct rte_pmd_i40e_ptype_info *)info_buff;
+		nb_proto_info = info_size /
+					sizeof(struct rte_pmd_i40e_ptype_info);
+		for (i = 0; i < nb_proto_info; i++)
+			memset(&pinfo[i], RTE_PMD_I40E_PROTO_UNUSED,
+			       sizeof(struct rte_pmd_i40e_ptype_info));
+		ptype = i40e_find_section_in_profile(SECTION_TYPE_PTYPE,
+				(struct i40e_profile_segment *)i40e_seg_hdr);
+		nb_tlv = i40e_get_tlv_section_size(ptype);
+		if (nb_tlv == 0)
+			return I40E_SUCCESS;
+		if (nb_proto_info < nb_tlv) {
+			PMD_DRV_LOG(ERR, "Invalid information buffer size");
+			return -EINVAL;
+		}
+		/* get number of records in the section */
+		nb_rec = ptype->section.size /
+				sizeof(struct i40e_profile_tlv_section_record);
+		for (i = j = 0; i < nb_rec; j++) {
+			tlv = (struct i40e_profile_tlv_section_record *)
+								&ptype[1 + i];
+			memcpy(&pinfo[j], tlv->data,
+			       sizeof(struct rte_pmd_i40e_ptype_info));
+			i += tlv->len;
+		}
+		return I40E_SUCCESS;
+	}
+
 	PMD_DRV_LOG(ERR, "Info type %u is invalid.", type);
 	return -EINVAL;
 }
 
 int
-rte_pmd_i40e_get_ddp_list(uint8_t port, uint8_t *buff, uint32_t size)
+rte_pmd_i40e_get_ddp_list(uint16_t port, uint8_t *buff, uint32_t size)
 {
 	struct rte_eth_dev *dev;
 	struct i40e_hw *hw;
@@ -1933,7 +2108,9 @@ static int check_invalid_pkt_type(uint32_t pkt_type)
 	    tnl != RTE_PTYPE_TUNNEL_VXLAN &&
 	    tnl != RTE_PTYPE_TUNNEL_NVGRE &&
 	    tnl != RTE_PTYPE_TUNNEL_GENEVE &&
-	    tnl != RTE_PTYPE_TUNNEL_GRENAT)
+	    tnl != RTE_PTYPE_TUNNEL_GRENAT &&
+	    tnl != RTE_PTYPE_TUNNEL_GTPC &&
+	    tnl != RTE_PTYPE_TUNNEL_GTPU)
 		return -1;
 
 	if (il2 &&
@@ -1991,7 +2168,7 @@ static int check_invalid_ptype_mapping(
 
 int
 rte_pmd_i40e_ptype_mapping_update(
-			uint8_t port,
+			uint16_t port,
 			struct rte_pmd_i40e_ptype_mapping *mapping_items,
 			uint16_t count,
 			uint8_t exclusive)
@@ -2027,7 +2204,7 @@ rte_pmd_i40e_ptype_mapping_update(
 	return 0;
 }
 
-int rte_pmd_i40e_ptype_mapping_reset(uint8_t port)
+int rte_pmd_i40e_ptype_mapping_reset(uint16_t port)
 {
 	struct rte_eth_dev *dev;
 
@@ -2044,7 +2221,7 @@ int rte_pmd_i40e_ptype_mapping_reset(uint8_t port)
 }
 
 int rte_pmd_i40e_ptype_mapping_get(
-			uint8_t port,
+			uint16_t port,
 			struct rte_pmd_i40e_ptype_mapping *mapping_items,
 			uint16_t size,
 			uint16_t *count,
@@ -2078,7 +2255,7 @@ int rte_pmd_i40e_ptype_mapping_get(
 	return 0;
 }
 
-int rte_pmd_i40e_ptype_mapping_replace(uint8_t port,
+int rte_pmd_i40e_ptype_mapping_replace(uint16_t port,
 				       uint32_t target,
 				       uint8_t mask,
 				       uint32_t pkt_type)
@@ -2112,6 +2289,144 @@ int rte_pmd_i40e_ptype_mapping_replace(uint8_t port,
 				ad->ptype_tbl[i] = pkt_type;
 		}
 	}
+
+	return 0;
+}
+
+int
+rte_pmd_i40e_add_vf_mac_addr(uint8_t port, uint16_t vf_id,
+			     struct ether_addr *mac_addr)
+{
+	struct rte_eth_dev *dev;
+	struct i40e_pf_vf *vf;
+	struct i40e_vsi *vsi;
+	struct i40e_pf *pf;
+	struct i40e_mac_filter_info mac_filter;
+	int ret;
+
+	if (i40e_validate_mac_addr((u8 *)mac_addr) != I40E_SUCCESS)
+		return -EINVAL;
+
+	RTE_ETH_VALID_PORTID_OR_ERR_RET(port, -ENODEV);
+
+	dev = &rte_eth_devices[port];
+
+	if (!is_i40e_supported(dev))
+		return -ENOTSUP;
+
+	pf = I40E_DEV_PRIVATE_TO_PF(dev->data->dev_private);
+
+	if (vf_id >= pf->vf_num || !pf->vfs)
+		return -EINVAL;
+
+	vf = &pf->vfs[vf_id];
+	vsi = vf->vsi;
+	if (!vsi) {
+		PMD_DRV_LOG(ERR, "Invalid VSI.");
+		return -EINVAL;
+	}
+
+	mac_filter.filter_type = RTE_MACVLAN_PERFECT_MATCH;
+	ether_addr_copy(mac_addr, &mac_filter.mac_addr);
+	ret = i40e_vsi_add_mac(vsi, &mac_filter);
+	if (ret != I40E_SUCCESS) {
+		PMD_DRV_LOG(ERR, "Failed to add MAC filter.");
+		return -1;
+	}
+
+	return 0;
+}
+
+int rte_pmd_i40e_flow_type_mapping_reset(uint8_t port)
+{
+	struct rte_eth_dev *dev;
+
+	RTE_ETH_VALID_PORTID_OR_ERR_RET(port, -ENODEV);
+
+	dev = &rte_eth_devices[port];
+
+	if (!is_i40e_supported(dev))
+		return -ENOTSUP;
+
+	i40e_set_default_pctype_table(dev);
+
+	return 0;
+}
+
+int rte_pmd_i40e_flow_type_mapping_get(
+			uint8_t port,
+			struct rte_pmd_i40e_flow_type_mapping *mapping_items)
+{
+	struct rte_eth_dev *dev;
+	struct i40e_adapter *ad;
+	uint16_t i;
+
+	RTE_ETH_VALID_PORTID_OR_ERR_RET(port, -ENODEV);
+
+	dev = &rte_eth_devices[port];
+
+	if (!is_i40e_supported(dev))
+		return -ENOTSUP;
+
+	ad = I40E_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
+
+	for (i = 0; i < I40E_FLOW_TYPE_MAX; i++) {
+		mapping_items[i].flow_type = i;
+		mapping_items[i].pctype = ad->pctypes_tbl[i];
+	}
+
+	return 0;
+}
+
+int
+rte_pmd_i40e_flow_type_mapping_update(
+			uint8_t port,
+			struct rte_pmd_i40e_flow_type_mapping *mapping_items,
+			uint16_t count,
+			uint8_t exclusive)
+{
+	struct rte_eth_dev *dev;
+	struct i40e_adapter *ad;
+	int i;
+
+	RTE_ETH_VALID_PORTID_OR_ERR_RET(port, -ENODEV);
+
+	dev = &rte_eth_devices[port];
+
+	if (!is_i40e_supported(dev))
+		return -ENOTSUP;
+
+	if (count > I40E_FLOW_TYPE_MAX)
+		return -EINVAL;
+
+	for (i = 0; i < count; i++)
+		if (mapping_items[i].flow_type >= I40E_FLOW_TYPE_MAX ||
+		    mapping_items[i].flow_type == RTE_ETH_FLOW_UNKNOWN ||
+		    (mapping_items[i].pctype &
+		    (1ULL << I40E_FILTER_PCTYPE_INVALID)))
+			return -EINVAL;
+
+	ad = I40E_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
+
+	if (exclusive) {
+		for (i = 0; i < I40E_FLOW_TYPE_MAX; i++)
+			ad->pctypes_tbl[i] = 0ULL;
+		ad->flow_types_mask = 0ULL;
+	}
+
+	for (i = 0; i < count; i++) {
+		ad->pctypes_tbl[mapping_items[i].flow_type] =
+						mapping_items[i].pctype;
+		if (mapping_items[i].pctype)
+			ad->flow_types_mask |=
+					(1ULL << mapping_items[i].flow_type);
+		else
+			ad->flow_types_mask &=
+					~(1ULL << mapping_items[i].flow_type);
+	}
+
+	for (i = 0, ad->pctypes_mask = 0ULL; i < I40E_FLOW_TYPE_MAX; i++)
+		ad->pctypes_mask |= ad->pctypes_tbl[i];
 
 	return 0;
 }

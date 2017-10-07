@@ -23,13 +23,14 @@
 /* Forward declaration */
 struct ecore_dev;
 struct ecore_hwfn;
+struct ecore_ptt;
 struct ecore_vf_acquire_sw_info;
 struct vf_pf_resc_request;
 enum ecore_mcp_protocol_type;
 union ecore_mcp_protocol_stats;
 enum ecore_hw_err_type;
 
-void qed_link_update(struct ecore_hwfn *hwfn);
+void qed_link_update(struct ecore_hwfn *hwfn, struct ecore_ptt *ptt);
 
 #if RTE_BYTE_ORDER == RTE_LITTLE_ENDIAN
 #undef __BIG_ENDIAN
@@ -146,6 +147,9 @@ void osal_dma_free_mem(struct ecore_dev *edev, dma_addr_t phys);
 	DIRECT_REG_WR_RELAXED((_p_hwfn),				\
 			      ((u8 *)(uintptr_t)(_p_hwfn->doorbells) +	\
 			      (_db_addr)), (u32)_val)
+
+#define DIRECT_REG_WR64(hwfn, addr, value) nothing
+#define DIRECT_REG_RD64(hwfn, addr) 0
 
 /* Mutexes */
 
@@ -327,7 +331,7 @@ u32 qede_find_first_zero_bit(unsigned long *, u32);
 
 #define OSAL_BITMAP_WEIGHT(bitmap, count) 0
 
-#define OSAL_LINK_UPDATE(hwfn) qed_link_update(hwfn)
+#define OSAL_LINK_UPDATE(hwfn, ptt) qed_link_update(hwfn, ptt)
 #define OSAL_DCBX_AEN(hwfn, mib_type) nothing
 
 /* SR-IOV channel */
@@ -344,8 +348,8 @@ u32 qede_find_first_zero_bit(unsigned long *, u32);
 #define OSAL_IOV_VF_VPORT_UPDATE(hwfn, vfid, p_params, p_mask) 0
 #define OSAL_VF_UPDATE_ACQUIRE_RESC_RESP(_dev_p, _resc_resp) 0
 #define OSAL_IOV_GET_OS_TYPE() 0
-#define OSAL_IOV_VF_MSG_TYPE(hwfn, vfid, vf_msg_type) 0
-#define OSAL_IOV_PF_RESP_TYPE(hwfn, vfid, pf_resp_type) 0
+#define OSAL_IOV_VF_MSG_TYPE(hwfn, vfid, vf_msg_type) nothing
+#define OSAL_IOV_PF_RESP_TYPE(hwfn, vfid, pf_resp_type) nothing
 
 u32 qede_unzip_data(struct ecore_hwfn *p_hwfn, u32 input_len,
 		   u8 *input_buf, u32 max_size, u8 *unzip_buf);
@@ -414,7 +418,9 @@ u32 qede_osal_log2(u32);
 #define OSAL_REG_ADDR(_p_hwfn, _offset) \
 		(void *)((u8 *)(uintptr_t)(_p_hwfn->regview) + (_offset))
 #define OSAL_PAGE_SIZE 4096
+#define OSAL_CACHE_LINE_SIZE RTE_CACHE_LINE_SIZE
 #define OSAL_IOMEM volatile
+#define OSAL_UNUSED    __attribute__((unused))
 #define OSAL_UNLIKELY(x)  __builtin_expect(!!(x), 0)
 #define OSAL_MIN_T(type, __min1, __min2)	\
 	((type)(__min1) < (type)(__min2) ? (type)(__min1) : (type)(__min2))
@@ -427,10 +433,12 @@ void qede_get_mcp_proto_stats(struct ecore_dev *, enum ecore_mcp_protocol_type,
 	qede_get_mcp_proto_stats(dev, type, stats)
 
 #define	OSAL_SLOWPATH_IRQ_REQ(p_hwfn) (0)
-#define OSAL_CRC32(crc, buf, length) 0
+
+u32 qede_crc32(u32 crc, u8 *ptr, u32 length);
+#define OSAL_CRC32(crc, buf, length) qede_crc32(crc, buf, length)
 #define OSAL_CRC8_POPULATE(table, polynomial) nothing
 #define OSAL_CRC8(table, pdata, nbytes, crc) 0
-#define OSAL_MFW_TLV_REQ(p_hwfn) (0)
+#define OSAL_MFW_TLV_REQ(p_hwfn) nothing
 #define OSAL_MFW_FILL_TLV_DATA(type, buf, data) (0)
 #define OSAL_PF_VALIDATE_MODIFY_TUNN_CONFIG(p_hwfn, mask, b_update, tunn) 0
 #endif /* __BCM_OSAL_H */

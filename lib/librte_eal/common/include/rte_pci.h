@@ -202,6 +202,8 @@ struct rte_pci_bus {
 #define RTE_PCI_DRV_INTR_RMV 0x0010
 /** Device driver needs to keep mapped resources if unsupported dev detected */
 #define RTE_PCI_DRV_KEEP_MAPPED_RES 0x0020
+/** Device driver supports IOVA as VA */
+#define RTE_PCI_DRV_IOVA_AS_VA 0X0040
 
 /**
  * A structure describing a PCI mapping.
@@ -365,6 +367,32 @@ int rte_pci_scan(void);
  */
 int
 rte_pci_probe(void);
+
+/*
+ * Match the PCI Driver and Device using the ID Table
+ *
+ * @param pci_drv
+ *      PCI driver from which ID table would be extracted
+ * @param pci_dev
+ *      PCI device to match against the driver
+ * @return
+ *      1 for successful match
+ *      0 for unsuccessful match
+ */
+int
+rte_pci_match(const struct rte_pci_driver *pci_drv,
+	      const struct rte_pci_device *pci_dev);
+
+
+/**
+ * Get iommu class of PCI devices on the bus.
+ * And return their preferred iova mapping mode.
+ *
+ * @return
+ *   - enum rte_iova_mode.
+ */
+enum rte_iova_mode
+rte_pci_get_iommu_class(void);
 
 /**
  * Map the PCI device resources in user space virtual memory address
