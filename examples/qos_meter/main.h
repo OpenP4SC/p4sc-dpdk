@@ -41,11 +41,18 @@ enum policer_action {
         DROP = 3,
 };
 
-enum policer_action policer_table[e_RTE_METER_COLORS][e_RTE_METER_COLORS] =
+/* enum policer_action policer_table[e_RTE_METER_COLORS][e_RTE_METER_COLORS] =
 {
 	{ GREEN, RED, RED},
 	{ DROP, YELLOW, RED},
 	{ DROP, DROP, RED}
+};*/
+
+enum policer_action policer_table[e_RTE_METER_COLORS][e_RTE_METER_COLORS] =
+{
+	{ GREEN, YELLOW, RED},
+	{ GREEN, YELLOW, RED},
+	{ GREEN, YELLOW, RED}
 };
 
 #if APP_MODE == APP_MODE_FWD
