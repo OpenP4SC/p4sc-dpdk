@@ -8,14 +8,6 @@ API and ABI deprecation notices are to be posted here.
 Deprecation Notices
 -------------------
 
-* eal: the following functions are deprecated starting from 17.05 and will
-  be removed in 17.11:
-
-  - ``rte_set_log_level``, replaced by ``rte_log_set_global_level``
-  - ``rte_get_log_level``, replaced by ``rte_log_get_global_level``
-  - ``rte_set_log_type``, replaced by ``rte_log_set_level``
-  - ``rte_get_log_type``, replaced by ``rte_log_get_level``
-
 * eal: several API and ABI changes are planned for ``rte_devargs`` in v17.11.
   The format of device command line parameters will change. The bus will need
   to be explicitly stated in the device declaration. The enum ``rte_devtype``
@@ -28,9 +20,6 @@ Deprecation Notices
   - ``rte_eal_devargs_add``
   - ``rte_eal_devargs_type_count``
   - ``rte_eal_parse_devargs_str``, replaced by ``rte_eal_devargs_parse``
-
-* eal: the support of Xen dom0 will be removed from EAL in 17.11; and with
-  that, drivers/net/xenvirt and examples/vhost_xen will also be removed.
 
 * eal: An ABI change is planned for 17.11 to make DPDK aware of IOVA address
   translation scheme.
@@ -67,10 +56,6 @@ Deprecation Notices
   done by the EAL and not by the ``ethdev`` layer anymore. Users relying on this
   flag being present only have to remove their checks to follow the change.
 
-* ethdev: An ABI change is planned for 17.11 for the structure rte_eth_dev_data.
-  The size of the unique name will increase RTE_ETH_NAME_MAX_LEN from 32 to
-  64 characters to allow using a globally unique identifier (GUID) in this field.
-
 * ethdev: new parameters - ``rte_security_capabilities`` and
   ``rte_security_ops`` will be added to ``rte_eth_dev_info`` and
   ``rte_eth_dev`` respectively  to support security operations like
@@ -91,17 +76,5 @@ Deprecation Notices
 
   - ``rte_cryptodev_vdev_pmd_init``
 
-* cryptodev: the following function will have an extra parameter, passing a
-  statically allocated crypto driver structure, instead of calling malloc,
-  in 17.11:
-
-  - ``rte_cryptodev_allocate_driver``
-
 * librte_meter: The API will change to accommodate configuration profiles.
   Most of the API functions will have an additional opaque parameter.
-
-* librte_table: The ``key_mask`` parameter will be added to all the hash tables
-  that currently do not have it, as well as to the hash compute function prototype.
-  The non-"do-sig" versions of the hash tables will be removed
-  (including the ``signature_offset`` parameter)
-  and the "do-sig" versions renamed accordingly.

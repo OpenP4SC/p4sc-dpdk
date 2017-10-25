@@ -36,6 +36,7 @@
 
 #include <rte_pci.h>
 #include <rte_gro.h>
+#include <rte_gso.h>
 
 #define RTE_PORT_ALL            (~(portid_t)0x0)
 
@@ -84,6 +85,12 @@ typedef uint16_t streamid_t;
 
 #define MAX_QUEUE_ID ((1 << (sizeof(queueid_t) * 8)) - 1)
 
+#if defined RTE_LIBRTE_PMD_SOFTNIC && defined RTE_LIBRTE_SCHED
+#define TM_MODE			1
+#else
+#define TM_MODE			0
+#endif
+
 enum {
 	PORT_TOPOLOGY_PAIRED,
 	PORT_TOPOLOGY_CHAINED,
@@ -120,6 +127,7 @@ struct fwd_stream {
 	unsigned int fwd_dropped; /**< received packets not forwarded */
 	unsigned int rx_bad_ip_csum ; /**< received packets has bad ip checksum */
 	unsigned int rx_bad_l4_csum ; /**< received packets has bad l4 checksum */
+	unsigned int gro_times;	/**< GRO operation times */
 #ifdef RTE_TEST_PMD_RECORD_CORE_CYCLES
 	uint64_t     core_cycles; /**< used for RX and TX processing */
 #endif
@@ -162,6 +170,38 @@ struct port_flow {
 	uint8_t data[]; /**< Storage for pattern/actions. */
 };
 
+#ifdef TM_MODE
+/**
+ * Soft port tm related parameters
+ */
+struct softnic_port_tm {
+	uint32_t default_hierarchy_enable; /**< def hierarchy enable flag */
+	uint32_t hierarchy_config;  /**< set to 1 if hierarchy configured */
+
+	uint32_t n_subports_per_port;  /**< Num of subport nodes per port */
+	uint32_t n_pipes_per_subport;  /**< Num of pipe nodes per subport */
+
+	uint64_t tm_pktfield0_slabpos;	/**< Pkt field position for subport */
+	uint64_t tm_pktfield0_slabmask; /**< Pkt field mask for the subport */
+	uint64_t tm_pktfield0_slabshr;
+	uint64_t tm_pktfield1_slabpos; /**< Pkt field position for the pipe */
+	uint64_t tm_pktfield1_slabmask; /**< Pkt field mask for the pipe */
+	uint64_t tm_pktfield1_slabshr;
+	uint64_t tm_pktfield2_slabpos; /**< Pkt field position table index */
+	uint64_t tm_pktfield2_slabmask;	/**< Pkt field mask for tc table idx */
+	uint64_t tm_pktfield2_slabshr;
+	uint64_t tm_tc_table[64];  /**< TC translation table */
+};
+
+/**
+ * The data structure associate with softnic port
+ */
+struct softnic_port {
+	unsigned int tm_flag;	/**< set to 1 if tm feature is enabled */
+	struct softnic_port_tm tm;	/**< softnic port tm parameters */
+};
+#endif
+
 /**
  * The data structure associated with each port.
  */
@@ -195,6 +235,10 @@ struct rte_port {
 	uint32_t                mc_addr_nb; /**< nb. of addr. in mc_addr_pool */
 	uint8_t                 slave_flag; /**< bonding slave port */
 	struct port_flow        *flow_list; /**< Associated flows. */
+#ifdef TM_MODE
+	unsigned int			softnic_enable;	/**< softnic flag */
+	struct softnic_port     softport;  /**< softnic port params */
+#endif
 };
 
 /**
@@ -205,7 +249,9 @@ struct rte_port {
  * CPU id. configuration table.
  */
 struct fwd_lcore {
+	struct rte_gso_ctx gso_ctx;     /**< GSO context */
 	struct rte_mempool *mbp; /**< The mbuf pool to use by this core */
+	void *gro_ctx;		/**< GRO context */
 	streamid_t stream_idx;   /**< index of 1st stream in "fwd_streams" */
 	streamid_t stream_nb;    /**< number of streams in "fwd_streams" */
 	lcoreid_t  cpuid_idx;    /**< index of logical core in CPU id table */
@@ -253,6 +299,10 @@ extern struct fwd_engine rx_only_engine;
 extern struct fwd_engine tx_only_engine;
 extern struct fwd_engine csum_fwd_engine;
 extern struct fwd_engine icmp_echo_engine;
+#ifdef TM_MODE
+extern struct fwd_engine softnic_tm_engine;
+extern struct fwd_engine softnic_tm_bypass_engine;
+#endif
 #ifdef RTE_LIBRTE_IEEE1588
 extern struct fwd_engine ieee1588_fwd_engine;
 #endif
@@ -434,13 +484,26 @@ extern struct ether_addr peer_eth_addrs[RTE_MAX_ETHPORTS];
 extern uint32_t burst_tx_delay_time; /**< Burst tx delay time(us) for mac-retry. */
 extern uint32_t burst_tx_retry_num;  /**< Burst tx retry number for mac-retry. */
 
-#define GRO_DEFAULT_FLOW_NUM 4
-#define GRO_DEFAULT_ITEM_NUM_PER_FLOW DEF_PKT_BURST
+#define GRO_DEFAULT_ITEM_NUM_PER_FLOW 32
+#define GRO_DEFAULT_FLOW_NUM (RTE_GRO_MAX_BURST_ITEM_NUM / \
+		GRO_DEFAULT_ITEM_NUM_PER_FLOW)
+
+#define GRO_DEFAULT_FLUSH_CYCLES 1
+#define GRO_MAX_FLUSH_CYCLES 4
+
 struct gro_status {
 	struct rte_gro_param param;
 	uint8_t enable;
 };
 extern struct gro_status gro_ports[RTE_MAX_ETHPORTS];
+extern uint8_t gro_flush_cycles;
+
+#define GSO_MAX_PKT_BURST 2048
+struct gso_status {
+	uint8_t enable;
+};
+extern struct gso_status gso_ports[RTE_MAX_ETHPORTS];
+extern uint16_t gso_max_segment_size;
 
 static inline unsigned int
 lcore_num(void)
@@ -612,7 +675,7 @@ void stop_port(portid_t pid);
 void close_port(portid_t pid);
 void reset_port(portid_t pid);
 void attach_port(char *identifier);
-void detach_port(uint8_t port_id);
+void detach_port(portid_t port_id);
 int all_ports_stopped(void);
 int port_is_started(portid_t port_id);
 void pmd_test_exit(void);
@@ -635,22 +698,27 @@ void port_rss_hash_conf_show(portid_t port_id, char rss_info[],
 			     int show_rss_key);
 void port_rss_hash_key_update(portid_t port_id, char rss_type[],
 			      uint8_t *hash_key, uint hash_key_len);
-void get_syn_filter(uint8_t port_id);
-void get_ethertype_filter(uint8_t port_id, uint16_t index);
-void get_2tuple_filter(uint8_t port_id, uint16_t index);
-void get_5tuple_filter(uint8_t port_id, uint16_t index);
+void get_syn_filter(portid_t port_id);
+void get_ethertype_filter(portid_t port_id, uint16_t index);
+void get_2tuple_filter(portid_t port_id, uint16_t index);
+void get_5tuple_filter(portid_t port_id, uint16_t index);
 int rx_queue_id_is_invalid(queueid_t rxq_id);
 int tx_queue_id_is_invalid(queueid_t txq_id);
-void setup_gro(const char *mode, uint8_t port_id);
+void setup_gro(const char *onoff, portid_t port_id);
+void setup_gro_flush_cycles(uint8_t cycles);
+void show_gro(portid_t port_id);
+void setup_gso(const char *mode, portid_t port_id);
 
 /* Functions to manage the set of filtered Multicast MAC addresses */
-void mcast_addr_add(uint8_t port_id, struct ether_addr *mc_addr);
-void mcast_addr_remove(uint8_t port_id, struct ether_addr *mc_addr);
-void port_dcb_info_display(uint8_t port_id);
+void mcast_addr_add(portid_t port_id, struct ether_addr *mc_addr);
+void mcast_addr_remove(portid_t port_id, struct ether_addr *mc_addr);
+void port_dcb_info_display(portid_t port_id);
 
 uint8_t *open_ddp_package_file(const char *file_path, uint32_t *size);
 int save_ddp_package_file(const char *file_path, uint8_t *buf, uint32_t size);
 int close_ddp_package_file(uint8_t *buf);
+
+void port_queue_region_info_display(portid_t port_id, void *buf);
 
 enum print_warning {
 	ENABLED_WARN = 0,

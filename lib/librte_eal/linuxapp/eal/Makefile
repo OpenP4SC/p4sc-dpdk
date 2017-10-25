@@ -34,10 +34,10 @@ include $(RTE_SDK)/mk/rte.vars.mk
 LIB = librte_eal.a
 
 ARCH_DIR ?= $(RTE_ARCH)
-EXPORT_MAP := rte_eal_version.map
+EXPORT_MAP := ../../rte_eal_version.map
 VPATH += $(RTE_SDK)/lib/librte_eal/common/arch/$(ARCH_DIR)
 
-LIBABIVER := 5
+LIBABIVER := 6
 
 VPATH += $(RTE_SDK)/lib/librte_eal/common
 
@@ -58,9 +58,6 @@ endif
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUXAPP) := eal.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUXAPP) += eal_hugepage_info.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUXAPP) += eal_memory.c
-ifeq ($(CONFIG_RTE_LIBRTE_XEN_DOM0),y)
-SRCS-$(CONFIG_RTE_EXEC_ENV_LINUXAPP) += eal_xen_memory.c
-endif
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUXAPP) += eal_thread.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUXAPP) += eal_log.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUXAPP) += eal_vfio.c
@@ -104,6 +101,25 @@ SRCS-$(CONFIG_RTE_EXEC_ENV_LINUXAPP) += rte_service.c
 # from arch dir
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUXAPP) += rte_cpuflags.c
 SRCS-$(CONFIG_RTE_ARCH_X86) += rte_spinlock.c
+SRCS-y += rte_cycles.c
+
+# for run-time dispatch of memcpy
+SRCS-$(CONFIG_RTE_ARCH_X86) += rte_memcpy.c
+SRCS-$(CONFIG_RTE_ARCH_X86) += rte_memcpy_sse.c
+
+# if the compiler supports AVX512, add avx512 file
+ifneq ($(findstring CC_SUPPORT_AVX512F,$(MACHINE_CFLAGS)),)
+SRCS-$(CONFIG_RTE_ARCH_X86) += rte_memcpy_avx512f.c
+CFLAGS_rte_memcpy_avx512f.o += -mavx512f
+CFLAGS_rte_memcpy_avx512f.o += -DRTE_MACHINE_CPUFLAG_AVX512F
+endif
+
+# if the compiler supports AVX2, add avx2 file
+ifneq ($(findstring CC_SUPPORT_AVX2,$(MACHINE_CFLAGS)),)
+SRCS-$(CONFIG_RTE_ARCH_X86) += rte_memcpy_avx2.c
+CFLAGS_rte_memcpy_avx2.o += -mavx2
+CFLAGS_rte_memcpy_avx2.o += -DRTE_MACHINE_CPUFLAG_AVX2
+endif
 
 CFLAGS_eal_common_cpuflags.o := $(CPUFLAGS_LIST)
 
@@ -130,7 +146,7 @@ ifeq ($(CONFIG_RTE_TOOLCHAIN_GCC),y)
 CFLAGS_eal_thread.o += -Wno-return-type
 endif
 
-INC := rte_interrupts.h rte_kni_common.h rte_dom0_common.h
+INC := rte_kni_common.h
 
 SYMLINK-$(CONFIG_RTE_EXEC_ENV_LINUXAPP)-include/exec-env := \
 	$(addprefix include/exec-env/,$(INC))

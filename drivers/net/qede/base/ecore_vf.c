@@ -65,6 +65,14 @@ static void ecore_vf_pf_req_end(struct ecore_hwfn *p_hwfn,
 	OSAL_MUTEX_RELEASE(&p_hwfn->vf_iov_info->mutex);
 }
 
+#ifdef CONFIG_ECORE_SW_CHANNEL
+/* The SW channel implementation of Windows needs to know the 'exact'
+ * response size of any given message. That means that for future
+ * messages we'd be unable to send TLVs to PF if he'll be unable to
+ * answer them if the |response| != |default response|.
+ * We'd need to handshake in acquire capabilities for any such.
+ */
+#endif
 static enum _ecore_status_t
 ecore_send_msg2pf(struct ecore_hwfn *p_hwfn,
 		  u8 *done, u32 resp_size)
@@ -122,14 +130,20 @@ ecore_send_msg2pf(struct ecore_hwfn *p_hwfn,
 	}
 
 	if (!*done) {
-		DP_VERBOSE(p_hwfn, ECORE_MSG_IOV,
-			   "VF <-- PF Timeout [Type %d]\n",
-			   p_req->first_tlv.tl.type);
+		DP_NOTICE(p_hwfn, true,
+			  "VF <-- PF Timeout [Type %d]\n",
+			  p_req->first_tlv.tl.type);
 		rc = ECORE_TIMEOUT;
 	} else {
-		DP_VERBOSE(p_hwfn, ECORE_MSG_IOV,
-			   "PF response: %d [Type %d]\n",
-			   *done, p_req->first_tlv.tl.type);
+		if ((*done != PFVF_STATUS_SUCCESS) &&
+		    (*done != PFVF_STATUS_NO_RESOURCE))
+			DP_NOTICE(p_hwfn, false,
+				  "PF response: %d [Type %d]\n",
+				  *done, p_req->first_tlv.tl.type);
+		else
+			DP_VERBOSE(p_hwfn, ECORE_MSG_IOV,
+				   "PF response: %d [Type %d]\n",
+				   *done, p_req->first_tlv.tl.type);
 	}
 
 	return rc;
@@ -1861,3 +1875,10 @@ void ecore_vf_get_fw_version(struct ecore_hwfn *p_hwfn,
 	*fw_rev = info->fw_rev;
 	*fw_eng = info->fw_eng;
 }
+
+#ifdef CONFIG_ECORE_SW_CHANNEL
+void ecore_vf_set_hw_channel(struct ecore_hwfn *p_hwfn, bool b_is_hw)
+{
+	p_hwfn->vf_iov_info->b_hw_channel = b_is_hw;
+}
+#endif

@@ -1371,6 +1371,29 @@ rule or if packets are not addressed to a VF in the first place.
    | ``vf``       | VF ID to redirect packets to   |
    +--------------+--------------------------------+
 
+Action: ``METER``
+^^^^^^^^^^^^^^^^^
+
+Applies a stage of metering and policing.
+
+The metering and policing (MTR) object has to be first created using the
+rte_mtr_create() API function. The ID of the MTR object is specified as
+action parameter. More than one flow can use the same MTR object through
+the meter action. The MTR object can be further updated or queried using
+the rte_mtr* API.
+
+- Non-terminating by default.
+
+.. _table_rte_flow_action_meter:
+
+.. table:: METER
+
+   +--------------+---------------+
+   | Field        | Value         |
+   +==============+===============+
+   | ``mtr_id``   | MTR object ID |
+   +--------------+---------------+
+
 Negative types
 ~~~~~~~~~~~~~~
 
@@ -1418,7 +1441,7 @@ supported and can be created.
 .. code-block:: c
 
    int
-   rte_flow_validate(uint8_t port_id,
+   rte_flow_validate(uint16_t port_id,
                      const struct rte_flow_attr *attr,
                      const struct rte_flow_item pattern[],
                      const struct rte_flow_action actions[],
@@ -1473,7 +1496,7 @@ actually created and a handle returned.
 .. code-block:: c
 
    struct rte_flow *
-   rte_flow_create(uint8_t port_id,
+   rte_flow_create(uint16_t port_id,
                    const struct rte_flow_attr *attr,
                    const struct rte_flow_item pattern[],
                    const struct rte_flow_action *actions[],
@@ -1505,7 +1528,7 @@ performing this step before releasing resources.
 .. code-block:: c
 
    int
-   rte_flow_destroy(uint8_t port_id,
+   rte_flow_destroy(uint16_t port_id,
                     struct rte_flow *flow,
                     struct rte_flow_error *error);
 
@@ -1536,7 +1559,7 @@ port. They are released as with successive calls to ``rte_flow_destroy()``.
 .. code-block:: c
 
    int
-   rte_flow_flush(uint8_t port_id,
+   rte_flow_flush(uint16_t port_id,
                   struct rte_flow_error *error);
 
 In the unlikely event of failure, handles are still considered destroyed and
@@ -1564,7 +1587,7 @@ definition.
 .. code-block:: c
 
    int
-   rte_flow_query(uint8_t port_id,
+   rte_flow_query(uint16_t port_id,
                   struct rte_flow *flow,
                   enum rte_flow_action_type action,
                   void *data,
@@ -1637,7 +1660,7 @@ port and may return errors such as ``ENOTSUP`` ("not supported"):
 .. code-block:: c
 
    int
-   rte_flow_isolate(uint8_t port_id, int set, struct rte_flow_error *error);
+   rte_flow_isolate(uint16_t port_id, int set, struct rte_flow_error *error);
 
 Arguments:
 
@@ -1694,6 +1717,25 @@ error, the message points to a constant string which does not need to be
 freed by the application, however its pointer can be considered valid only
 as long as its associated DPDK port remains configured. Closing the
 underlying device or unloading the PMD invalidates it.
+
+Helpers
+-------
+
+Error initializer
+~~~~~~~~~~~~~~~~~
+
+.. code-block:: c
+
+   static inline int
+   rte_flow_error_set(struct rte_flow_error *error,
+                      int code,
+                      enum rte_flow_error_type type,
+                      const void *cause,
+                      const char *message);
+
+This function initializes ``error`` (if non-NULL) with the provided
+parameters and sets ``rte_errno`` to ``code``. A negative error ``code`` is
+then returned.
 
 Caveats
 -------
@@ -1760,12 +1802,10 @@ the legacy filtering framework, which should eventually disappear.
   whatsoever). They only make sure these callbacks are non-NULL or return
   the ``ENOSYS`` (function not supported) error.
 
-This interface additionally defines the following helper functions:
+This interface additionally defines the following helper function:
 
 - ``rte_flow_ops_get()``: get generic flow operations structure from a
   port.
-
-- ``rte_flow_error_set()``: initialize generic flow error structure.
 
 More will be added over time.
 

@@ -125,11 +125,12 @@ bond_ethdev_rx_burst_active_backup(void *queue, struct rte_mbuf **bufs,
 }
 
 static inline uint8_t
-is_lacp_packets(uint16_t ethertype, uint8_t subtype, uint16_t vlan_tci)
+is_lacp_packets(uint16_t ethertype, uint8_t subtype, struct rte_mbuf *mbuf)
 {
 	const uint16_t ether_type_slow_be = rte_be_to_cpu_16(ETHER_TYPE_SLOW);
 
-	return !vlan_tci && (ethertype == ether_type_slow_be &&
+	return !((mbuf->ol_flags & PKT_RX_VLAN_PKT) ? mbuf->vlan_tci : 0) &&
+		(ethertype == ether_type_slow_be &&
 		(subtype == SLOW_SUBTYPE_MARKER || subtype == SLOW_SUBTYPE_LACP));
 }
 
@@ -455,7 +456,7 @@ bond_ethdev_rx_burst_8023ad(void *queue, struct rte_mbuf **bufs,
 			/* Remove packet from array if it is slow packet or slave is not
 			 * in collecting state or bonding interface is not in promiscuous
 			 * mode and packet address does not match. */
-			if (unlikely(is_lacp_packets(hdr->ether_type, subtype, bufs[j]->vlan_tci) ||
+			if (unlikely(is_lacp_packets(hdr->ether_type, subtype, bufs[j]) ||
 				!collecting || (!promisc &&
 					!is_multicast_ether_addr(&hdr->d_addr) &&
 					!is_same_ether_addr(&bond_mac, &hdr->d_addr)))) {
@@ -537,7 +538,7 @@ ipv4_addr_to_dot(uint32_t be_ipv4_addr, char *buf, uint8_t buf_size)
 #define MAX_CLIENTS_NUMBER	128
 uint8_t active_clients;
 struct client_stats_t {
-	uint8_t port;
+	uint16_t port;
 	uint32_t ipv4_addr;
 	uint32_t ipv4_rx_packets;
 	uint32_t ipv4_tx_packets;
@@ -545,7 +546,7 @@ struct client_stats_t {
 struct client_stats_t client_stats[MAX_CLIENTS_NUMBER];
 
 static void
-update_client_stats(uint32_t addr, uint8_t port, uint32_t *TXorRXindicator)
+update_client_stats(uint32_t addr, uint16_t port, uint32_t *TXorRXindicator)
 {
 	int i = 0;
 
@@ -603,7 +604,7 @@ update_client_stats(uint32_t addr, uint8_t port, uint32_t *TXorRXindicator)
 
 static void
 mode6_debug(const char __attribute__((unused)) *info, struct ether_hdr *eth_h,
-		uint8_t port, uint32_t __attribute__((unused)) *burstnumber)
+		uint16_t port, uint32_t __attribute__((unused)) *burstnumber)
 {
 	struct ipv4_hdr *ipv4_h;
 #ifdef RTE_LIBRTE_BOND_DEBUG_ALB
@@ -2058,7 +2059,7 @@ bond_ethdev_close(struct rte_eth_dev *dev)
 
 	RTE_LOG(INFO, EAL, "Closing bonded device %s\n", dev->device->name);
 	while (internals->slave_count != skipped) {
-		uint8_t port_id = internals->slaves[skipped].port_id;
+		uint16_t port_id = internals->slaves[skipped].port_id;
 
 		rte_eth_dev_stop(port_id);
 
@@ -2370,7 +2371,7 @@ bond_ethdev_link_update(struct rte_eth_dev *ethdev, int wait_to_complete)
 }
 
 
-static void
+static int
 bond_ethdev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 {
 	struct bond_dev_private *internals = dev->data->dev_private;
@@ -2398,6 +2399,8 @@ bond_ethdev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 		}
 
 	}
+
+	return 0;
 }
 
 static void

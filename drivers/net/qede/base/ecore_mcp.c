@@ -156,6 +156,9 @@ enum _ecore_status_t ecore_mcp_free(struct ecore_hwfn *p_hwfn)
 	if (p_hwfn->mcp_info) {
 		struct ecore_mcp_cmd_elem *p_cmd_elem = OSAL_NULL, *p_tmp;
 
+		OSAL_FREE(p_hwfn->p_dev, p_hwfn->mcp_info->mfw_mb_cur);
+		OSAL_FREE(p_hwfn->p_dev, p_hwfn->mcp_info->mfw_mb_shadow);
+
 		OSAL_SPIN_LOCK(&p_hwfn->mcp_info->cmd_lock);
 		OSAL_LIST_FOR_EACH_ENTRY_SAFE(p_cmd_elem, p_tmp,
 					      &p_hwfn->mcp_info->cmd_list, list,
@@ -164,8 +167,6 @@ enum _ecore_status_t ecore_mcp_free(struct ecore_hwfn *p_hwfn)
 		}
 		OSAL_SPIN_UNLOCK(&p_hwfn->mcp_info->cmd_lock);
 
-		OSAL_FREE(p_hwfn->p_dev, p_hwfn->mcp_info->mfw_mb_cur);
-		OSAL_FREE(p_hwfn->p_dev, p_hwfn->mcp_info->mfw_mb_shadow);
 #ifdef CONFIG_ECORE_LOCK_ALLOC
 		OSAL_SPIN_LOCK_DEALLOC(&p_hwfn->mcp_info->cmd_lock);
 		OSAL_SPIN_LOCK_DEALLOC(&p_hwfn->mcp_info->link_lock);
@@ -244,6 +245,16 @@ enum _ecore_status_t ecore_mcp_cmd_init(struct ecore_hwfn *p_hwfn,
 		goto err;
 	p_info = p_hwfn->mcp_info;
 
+	/* Initialize the MFW spinlocks */
+#ifdef CONFIG_ECORE_LOCK_ALLOC
+	OSAL_SPIN_LOCK_ALLOC(p_hwfn, &p_info->cmd_lock);
+	OSAL_SPIN_LOCK_ALLOC(p_hwfn, &p_info->link_lock);
+#endif
+	OSAL_SPIN_LOCK_INIT(&p_info->cmd_lock);
+	OSAL_SPIN_LOCK_INIT(&p_info->link_lock);
+
+	OSAL_LIST_INIT(&p_info->cmd_list);
+
 	if (ecore_load_mcp_offsets(p_hwfn, p_ptt) != ECORE_SUCCESS) {
 		DP_NOTICE(p_hwfn, false, "MCP is not initialized\n");
 		/* Do not free mcp_info here, since public_base indicate that
@@ -257,16 +268,6 @@ enum _ecore_status_t ecore_mcp_cmd_init(struct ecore_hwfn *p_hwfn,
 	p_info->mfw_mb_shadow = OSAL_ZALLOC(p_hwfn->p_dev, GFP_KERNEL, size);
 	if (!p_info->mfw_mb_shadow || !p_info->mfw_mb_addr)
 		goto err;
-
-	/* Initialize the MFW spinlocks */
-#ifdef CONFIG_ECORE_LOCK_ALLOC
-	OSAL_SPIN_LOCK_ALLOC(p_hwfn, &p_info->cmd_lock);
-	OSAL_SPIN_LOCK_ALLOC(p_hwfn, &p_info->link_lock);
-#endif
-	OSAL_SPIN_LOCK_INIT(&p_info->cmd_lock);
-	OSAL_SPIN_LOCK_INIT(&p_info->link_lock);
-
-	OSAL_LIST_INIT(&p_info->cmd_list);
 
 	return ECORE_SUCCESS;
 
@@ -447,6 +448,24 @@ static void ecore_mcp_cmd_set_blocking(struct ecore_hwfn *p_hwfn,
 		block_cmd ? "Block" : "Unblock");
 }
 
+void ecore_mcp_print_cpu_info(struct ecore_hwfn *p_hwfn,
+			      struct ecore_ptt *p_ptt)
+{
+	u32 cpu_mode, cpu_state, cpu_pc_0, cpu_pc_1, cpu_pc_2;
+
+	cpu_mode = ecore_rd(p_hwfn, p_ptt, MCP_REG_CPU_MODE);
+	cpu_state = ecore_rd(p_hwfn, p_ptt, MCP_REG_CPU_STATE);
+	cpu_pc_0 = ecore_rd(p_hwfn, p_ptt, MCP_REG_CPU_PROGRAM_COUNTER);
+	OSAL_UDELAY(CHIP_MCP_RESP_ITER_US);
+	cpu_pc_1 = ecore_rd(p_hwfn, p_ptt, MCP_REG_CPU_PROGRAM_COUNTER);
+	OSAL_UDELAY(CHIP_MCP_RESP_ITER_US);
+	cpu_pc_2 = ecore_rd(p_hwfn, p_ptt, MCP_REG_CPU_PROGRAM_COUNTER);
+
+	DP_NOTICE(p_hwfn, false,
+		  "MCP CPU info: mode 0x%08x, state 0x%08x, pc {0x%08x, 0x%08x, 0x%08x}\n",
+		  cpu_mode, cpu_state, cpu_pc_0, cpu_pc_1, cpu_pc_2);
+}
+
 static enum _ecore_status_t
 _ecore_mcp_cmd_and_union(struct ecore_hwfn *p_hwfn, struct ecore_ptt *p_ptt,
 			 struct ecore_mcp_mb_params *p_mb_params,
@@ -477,6 +496,7 @@ _ecore_mcp_cmd_and_union(struct ecore_hwfn *p_hwfn, struct ecore_ptt *p_ptt,
 
 		OSAL_SPIN_UNLOCK(&p_hwfn->mcp_info->cmd_lock);
 		OSAL_UDELAY(delay);
+		OSAL_MFW_CMD_PREEMPT(p_hwfn);
 	} while (++cnt < max_retries);
 
 	if (cnt >= max_retries) {
@@ -518,12 +538,14 @@ _ecore_mcp_cmd_and_union(struct ecore_hwfn *p_hwfn, struct ecore_ptt *p_ptt,
 			goto err;
 
 		OSAL_SPIN_UNLOCK(&p_hwfn->mcp_info->cmd_lock);
+		OSAL_MFW_CMD_PREEMPT(p_hwfn);
 	} while (++cnt < max_retries);
 
 	if (cnt >= max_retries) {
 		DP_NOTICE(p_hwfn, false,
 			  "The MFW failed to respond to command 0x%08x [param 0x%08x].\n",
 			  p_mb_params->cmd, p_mb_params->param);
+		ecore_mcp_print_cpu_info(p_hwfn, p_ptt);
 
 		OSAL_SPIN_LOCK(&p_hwfn->mcp_info->cmd_lock);
 		ecore_mcp_cmd_del_elem(p_hwfn, p_cmd_elem);
@@ -1195,6 +1217,8 @@ static void ecore_mcp_handle_transceiver_change(struct ecore_hwfn *p_hwfn,
 		DP_NOTICE(p_hwfn, false, "Transceiver is present.\n");
 	else
 		DP_NOTICE(p_hwfn, false, "Transceiver is unplugged.\n");
+
+	OSAL_TRANSCEIVER_UPDATE(p_hwfn);
 }
 
 static void ecore_mcp_read_eee_config(struct ecore_hwfn *p_hwfn,
@@ -1335,7 +1359,7 @@ static void ecore_mcp_handle_link_change(struct ecore_hwfn *p_hwfn,
 	__ecore_configure_pf_max_bandwidth(p_hwfn, p_ptt,
 					   p_link, max_bw);
 
-	/* Mintz bandwidth configuration */
+	/* Min bandwidth configuration */
 	__ecore_configure_pf_min_bandwidth(p_hwfn, p_ptt,
 					   p_link, min_bw);
 	ecore_configure_vp_wfq_on_link_change(p_hwfn->p_dev, p_ptt,
@@ -1988,6 +2012,9 @@ enum _ecore_status_t ecore_mcp_handle_events(struct ecore_hwfn *p_hwfn,
 			OSAL_MEMSET(&p_hwfn->p_dcbx_info->set, 0,
 				    sizeof(struct ecore_dcbx_set));
 			break;
+		case MFW_DRV_MSG_LLDP_RECEIVED_TLVS_UPDATED:
+			ecore_lldp_mib_update_event(p_hwfn, p_ptt);
+			break;
 		case MFW_DRV_MSG_OEM_CFG_UPDATE:
 			ecore_mcp_handle_ufp_event(p_hwfn, p_ptt);
 			break;
@@ -2529,9 +2556,9 @@ ecore_mcp_ov_update_current_config(struct ecore_hwfn *p_hwfn,
 				   struct ecore_ptt *p_ptt,
 				   enum ecore_ov_client client)
 {
-	enum _ecore_status_t rc;
 	u32 resp = 0, param = 0;
 	u32 drv_mb_param;
+	enum _ecore_status_t rc;
 
 	switch (client) {
 	case ECORE_OV_CLIENT_DRV:
@@ -2561,9 +2588,9 @@ ecore_mcp_ov_update_driver_state(struct ecore_hwfn *p_hwfn,
 				 struct ecore_ptt *p_ptt,
 				 enum ecore_ov_driver_state drv_state)
 {
-	enum _ecore_status_t rc;
 	u32 resp = 0, param = 0;
 	u32 drv_mb_param;
+	enum _ecore_status_t rc;
 
 	switch (drv_state) {
 	case ECORE_OV_DRIVER_STATE_NOT_LOADED:
@@ -2935,11 +2962,16 @@ enum _ecore_status_t ecore_mcp_phy_sfp_read(struct ecore_hwfn *p_hwfn,
 					  DRV_MSG_CODE_TRANSCEIVER_READ,
 					  nvm_offset, &resp, &param, &buf_size,
 					  (u32 *)(p_buf + offset));
-		if ((resp & FW_MSG_CODE_MASK) ==
-		    FW_MSG_CODE_TRANSCEIVER_NOT_PRESENT) {
+		if (rc != ECORE_SUCCESS) {
+			DP_NOTICE(p_hwfn, false,
+				  "Failed to send a transceiver read command to the MFW. rc = %d.\n",
+				  rc);
+			return rc;
+		}
+
+		if (resp == FW_MSG_CODE_TRANSCEIVER_NOT_PRESENT)
 			return ECORE_NODEV;
-		} else if ((resp & FW_MSG_CODE_MASK) !=
-			   FW_MSG_CODE_TRANSCEIVER_DIAG_OK)
+		else if (resp != FW_MSG_CODE_TRANSCEIVER_DIAG_OK)
 			return ECORE_UNKNOWN_ERROR;
 
 		offset += buf_size;
@@ -2973,11 +3005,16 @@ enum _ecore_status_t ecore_mcp_phy_sfp_write(struct ecore_hwfn *p_hwfn,
 					  DRV_MSG_CODE_TRANSCEIVER_WRITE,
 					  nvm_offset, &resp, &param, buf_size,
 					  (u32 *)&p_buf[buf_idx]);
-		if ((resp & FW_MSG_CODE_MASK) ==
-		    FW_MSG_CODE_TRANSCEIVER_NOT_PRESENT) {
+		if (rc != ECORE_SUCCESS) {
+			DP_NOTICE(p_hwfn, false,
+				  "Failed to send a transceiver write command to the MFW. rc = %d.\n",
+				  rc);
+			return rc;
+		}
+
+		if (resp == FW_MSG_CODE_TRANSCEIVER_NOT_PRESENT)
 			return ECORE_NODEV;
-		} else if ((resp & FW_MSG_CODE_MASK) !=
-			   FW_MSG_CODE_TRANSCEIVER_DIAG_OK)
+		else if (resp != FW_MSG_CODE_TRANSCEIVER_DIAG_OK)
 			return ECORE_UNKNOWN_ERROR;
 
 		buf_idx += buf_size;

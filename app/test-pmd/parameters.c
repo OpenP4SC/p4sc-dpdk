@@ -162,6 +162,7 @@ usage(char* progname)
 	printf("  --disable-crc-strip: disable CRC stripping by hardware.\n");
 	printf("  --enable-lro: enable large receive offload.\n");
 	printf("  --enable-rx-cksum: enable rx hardware checksum offload.\n");
+	printf("  --enable-rx-timestamp: enable rx hardware timestamp offload.\n");
 	printf("  --disable-hw-vlan: disable hardware vlan.\n");
 	printf("  --disable-hw-vlan-filter: disable hardware vlan filter.\n");
 	printf("  --disable-hw-vlan-strip: disable hardware vlan strip.\n");
@@ -393,7 +394,8 @@ parse_portnuma_config(const char *q_arg)
 	char s[256];
 	const char *p, *p0 = q_arg;
 	char *end;
-	uint8_t i,port_id,socket_id;
+	uint8_t i, socket_id;
+	portid_t port_id;
 	unsigned size;
 	enum fieldnames {
 		FLD_PORT = 0,
@@ -423,8 +425,9 @@ parse_portnuma_config(const char *q_arg)
 			if (errno != 0 || end == str_fld[i] || int_fld[i] > 255)
 				return -1;
 		}
-		port_id = (uint8_t)int_fld[FLD_PORT];
-		if (port_id_is_invalid(port_id, ENABLED_WARN)) {
+		port_id = (portid_t)int_fld[FLD_PORT];
+		if (port_id_is_invalid(port_id, ENABLED_WARN) ||
+			port_id == (portid_t)RTE_PORT_ALL) {
 			printf("Valid port range is [0");
 			RTE_ETH_FOREACH_DEV(pid)
 				printf(", %d", pid);
@@ -448,7 +451,8 @@ parse_ringnuma_config(const char *q_arg)
 	char s[256];
 	const char *p, *p0 = q_arg;
 	char *end;
-	uint8_t i,port_id,ring_flag,socket_id;
+	uint8_t i, ring_flag, socket_id;
+	portid_t port_id;
 	unsigned size;
 	enum fieldnames {
 		FLD_PORT = 0,
@@ -482,8 +486,9 @@ parse_ringnuma_config(const char *q_arg)
 			if (errno != 0 || end == str_fld[i] || int_fld[i] > 255)
 				return -1;
 		}
-		port_id = (uint8_t)int_fld[FLD_PORT];
-		if (port_id_is_invalid(port_id, ENABLED_WARN)) {
+		port_id = (portid_t)int_fld[FLD_PORT];
+		if (port_id_is_invalid(port_id, ENABLED_WARN) ||
+			port_id == (portid_t)RTE_PORT_ALL) {
 			printf("Valid port range is [0");
 			RTE_ETH_FOREACH_DEV(pid)
 				printf(", %d", pid);
@@ -601,6 +606,7 @@ launch_args_parse(int argc, char** argv)
 		{ "disable-crc-strip",          0, 0, 0 },
 		{ "enable-lro",                 0, 0, 0 },
 		{ "enable-rx-cksum",            0, 0, 0 },
+		{ "enable-rx-timestamp",        0, 0, 0 },
 		{ "enable-scatter",             0, 0, 0 },
 		{ "disable-hw-vlan",            0, 0, 0 },
 		{ "disable-hw-vlan-filter",     0, 0, 0 },
@@ -899,6 +905,9 @@ launch_args_parse(int argc, char** argv)
 				rx_mode.enable_scatter = 1;
 			if (!strcmp(lgopts[opt_idx].name, "enable-rx-cksum"))
 				rx_mode.hw_ip_checksum = 1;
+			if (!strcmp(lgopts[opt_idx].name,
+					"enable-rx-timestamp"))
+				rx_mode.hw_timestamp = 1;
 
 			if (!strcmp(lgopts[opt_idx].name, "disable-hw-vlan")) {
 				rx_mode.hw_vlan_filter = 0;

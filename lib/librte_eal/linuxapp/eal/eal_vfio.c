@@ -68,8 +68,8 @@ vfio_get_group_fd(int iommu_group_no)
 {
 	int i;
 	int vfio_group_fd;
-	int group_idx = -1;
 	char filename[PATH_MAX];
+	struct vfio_group *cur_grp;
 
 	/* check if we already have the group descriptor open */
 	for (i = 0; i < VFIO_MAX_GROUPS; i++)
@@ -85,12 +85,12 @@ vfio_get_group_fd(int iommu_group_no)
 	/* Now lets get an index for the new group */
 	for (i = 0; i < VFIO_MAX_GROUPS; i++)
 		if (vfio_cfg.vfio_groups[i].group_no == -1) {
-			group_idx = i;
+			cur_grp = &vfio_cfg.vfio_groups[i];
 			break;
 		}
 
 	/* This should not happen */
-	if (group_idx == -1) {
+	if (i == VFIO_MAX_GROUPS) {
 		RTE_LOG(ERR, EAL, "No VFIO group free slot found\n");
 		return -1;
 	}
@@ -123,8 +123,8 @@ vfio_get_group_fd(int iommu_group_no)
 			/* noiommu group found */
 		}
 
-		vfio_cfg.vfio_groups[group_idx].group_no = iommu_group_no;
-		vfio_cfg.vfio_groups[group_idx].fd = vfio_group_fd;
+		cur_grp->group_no = iommu_group_no;
+		cur_grp->fd = vfio_group_fd;
 		vfio_cfg.vfio_active_groups++;
 		return vfio_group_fd;
 	}
@@ -157,9 +157,12 @@ vfio_get_group_fd(int iommu_group_no)
 			return 0;
 		case SOCKET_OK:
 			vfio_group_fd = vfio_mp_sync_receive_fd(socket_fd);
-			/* if we got the fd, return it */
+			/* if we got the fd, store it and return it */
 			if (vfio_group_fd > 0) {
 				close(socket_fd);
+				cur_grp->group_no = iommu_group_no;
+				cur_grp->fd = vfio_group_fd;
+				vfio_cfg.vfio_active_groups++;
 				return vfio_group_fd;
 			}
 			/* fall-through on error */
@@ -489,7 +492,7 @@ vfio_enable(const char *modname)
 	/* inform the user that we are probing for VFIO */
 	RTE_LOG(INFO, EAL, "Probing VFIO support...\n");
 
-	/* check if vfio-pci module is loaded */
+	/* check if vfio module is loaded */
 	vfio_available = rte_eal_check_module(modname);
 
 	/* return error directly */
@@ -762,15 +765,29 @@ vfio_spapr_dma_map(int vfio_container_fd)
 		return -1;
 	}
 
-	/* calculate window size based on number of hugepages configured */
-	create.window_size = rte_eal_get_physmem_size();
+	/* create DMA window from 0 to max(phys_addr + len) */
+	for (i = 0; i < RTE_MAX_MEMSEG; i++) {
+		if (ms[i].addr == NULL)
+			break;
+
+		create.window_size = RTE_MAX(create.window_size,
+				ms[i].phys_addr + ms[i].len);
+	}
+
+	/* sPAPR requires window size to be a power of 2 */
+	create.window_size = rte_align64pow2(create.window_size);
 	create.page_shift = __builtin_ctzll(ms->hugepage_sz);
-	create.levels = 2;
+	create.levels = 1;
 
 	ret = ioctl(vfio_container_fd, VFIO_IOMMU_SPAPR_TCE_CREATE, &create);
 	if (ret) {
 		RTE_LOG(ERR, EAL, "  cannot create new DMA window, "
 				"error %i (%s)\n", errno, strerror(errno));
+		return -1;
+	}
+
+	if (create.start_addr != 0) {
+		RTE_LOG(ERR, EAL, "  DMA window start address != 0\n");
 		return -1;
 	}
 

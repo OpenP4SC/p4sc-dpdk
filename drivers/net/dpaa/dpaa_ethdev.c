@@ -283,7 +283,7 @@ static int dpaa_eth_link_update(struct rte_eth_dev *dev,
 	return 0;
 }
 
-static void dpaa_eth_stats_get(struct rte_eth_dev *dev,
+static int dpaa_eth_stats_get(struct rte_eth_dev *dev,
 			       struct rte_eth_stats *stats)
 {
 	struct dpaa_if *dpaa_intf = dev->data->dev_private;
@@ -291,6 +291,7 @@ static void dpaa_eth_stats_get(struct rte_eth_dev *dev,
 	PMD_INIT_FUNC_TRACE();
 
 	fman_if_stats_get(dpaa_intf->fif, stats);
+	return 0;
 }
 
 static void dpaa_eth_stats_reset(struct rte_eth_dev *dev)
@@ -921,7 +922,7 @@ dpaa_dev_init(struct rte_eth_dev *eth_dev)
 	/* reset bpool list, initialize bpool dynamically */
 	list_for_each_entry_safe(bp, tmp_bp, &cfg->fman_if->bpool_list, node) {
 		list_del(&bp->node);
-		rte_free(bp);
+		free(bp);
 	}
 
 	/* Populate ethdev structure */

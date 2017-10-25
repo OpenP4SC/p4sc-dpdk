@@ -369,6 +369,7 @@ struct rte_eth_rxmode {
 		hw_strip_crc     : 1, /**< Enable CRC stripping by hardware. */
 		enable_scatter   : 1, /**< Enable scatter packets rx handler */
 		enable_lro       : 1, /**< Enable LRO */
+		hw_timestamp     : 1, /**< Enable HW timestamp */
 		/**
 		 * When set the offload bitfield should be ignored.
 		 * Instead per-port Rx offloads should be set on offloads
@@ -922,7 +923,7 @@ struct rte_eth_conf {
 		/**< Port dcb RX configuration. */
 		struct rte_eth_vmdq_rx_conf vmdq_rx_conf;
 		/**< Port vmdq RX configuration. */
-	} rx_adv_conf; /**< Port RX filtering configuration (union). */
+	} rx_adv_conf; /**< Port RX filtering configuration. */
 	union {
 		struct rte_eth_vmdq_dcb_tx_conf vmdq_dcb_tx_conf;
 		/**< Port vmdq+dcb TX configuration. */
@@ -961,6 +962,7 @@ struct rte_eth_conf {
 #define DEV_RX_OFFLOAD_JUMBO_FRAME	0x00000800
 #define DEV_RX_OFFLOAD_CRC_STRIP	0x00001000
 #define DEV_RX_OFFLOAD_SCATTER		0x00002000
+#define DEV_RX_OFFLOAD_TIMESTAMP	0x00004000
 #define DEV_RX_OFFLOAD_CHECKSUM (DEV_RX_OFFLOAD_IPV4_CKSUM | \
 				 DEV_RX_OFFLOAD_UDP_CKSUM | \
 				 DEV_RX_OFFLOAD_TCP_CKSUM)
@@ -1207,7 +1209,7 @@ typedef int (*eth_link_update_t)(struct rte_eth_dev *dev,
 				int wait_to_complete);
 /**< @internal Get link speed, duplex mode and state (up/down) of an Ethernet device. */
 
-typedef void (*eth_stats_get_t)(struct rte_eth_dev *dev,
+typedef int (*eth_stats_get_t)(struct rte_eth_dev *dev,
 				struct rte_eth_stats *igb_stats);
 /**< @internal Get global I/O statistics of an Ethernet device. */
 
@@ -1497,6 +1499,9 @@ typedef int (*eth_filter_ctrl_t)(struct rte_eth_dev *dev,
 typedef int (*eth_tm_ops_get_t)(struct rte_eth_dev *dev, void *ops);
 /**< @internal Get Traffic Management (TM) operations on an Ethernet device */
 
+typedef int (*eth_mtr_ops_get_t)(struct rte_eth_dev *dev, void *ops);
+/**< @internal Get Trafffic Metering and Policing (MTR) operations */
+
 typedef int (*eth_get_dcb_info)(struct rte_eth_dev *dev,
 				 struct rte_eth_dcb_info *dcb_info);
 /**< @internal Get dcb information on an Ethernet device */
@@ -1625,6 +1630,10 @@ struct eth_dev_ops {
 
 	eth_tm_ops_get_t tm_ops_get;
 	/**< Get Traffic Management (TM) operations. */
+
+	eth_mtr_ops_get_t mtr_ops_get;
+	/**< Get Traffic Metering and Policing (MTR) operations. */
+
 	eth_pool_ops_supported_t pool_ops_supported;
 	/**< Test if a port supports specific mempool ops */
 };
@@ -2369,8 +2378,12 @@ int rte_eth_stats_get(uint16_t port_id, struct rte_eth_stats *stats);
  *
  * @param port_id
  *   The port identifier of the Ethernet device.
+ * @return
+ *   - (0) if device notified to reset stats.
+ *   - (-ENOTSUP) if hardware doesn't support.
+ *   - (-ENODEV) if *port_id* invalid.
  */
-void rte_eth_stats_reset(uint16_t port_id);
+int rte_eth_stats_reset(uint16_t port_id);
 
 /**
  * Retrieve names of extended statistics of an Ethernet device.
@@ -2456,23 +2469,23 @@ rte_eth_xstats_get_names_by_id(uint16_t port_id,
  * @param ids
  *   A pointer to an ids array passed by application. This tells which
  *   statistics values function should retrieve. This parameter
- *   can be set to NULL if n is 0. In this case function will retrieve
+ *   can be set to NULL if size is 0. In this case function will retrieve
  *   all avalible statistics.
  * @param values
  *   A pointer to a table to be filled with device statistics values.
- * @param n
+ * @param size
  *   The size of the ids array (number of elements).
  * @return
- *   - A positive value lower or equal to n: success. The return value
+ *   - A positive value lower or equal to size: success. The return value
  *     is the number of entries filled in the stats table.
- *   - A positive value higher than n: error, the given statistics table
+ *   - A positive value higher than size: error, the given statistics table
  *     is too small. The return value corresponds to the size that should
  *     be given to succeed. The entries in the table are not valid and
  *     shall not be used by the caller.
  *   - A negative value on error (invalid port id).
  */
 int rte_eth_xstats_get_by_id(uint16_t port_id, const uint64_t *ids,
-			     uint64_t *values, unsigned int n);
+			     uint64_t *values, unsigned int size);
 
 /**
  * Gets the ID of a statistic from its name.
@@ -4577,7 +4590,7 @@ int rte_eth_dev_adjust_nb_rx_tx_desc(uint16_t port_id,
  *   - -EINVAL: Pool param is null.
  */
 int
-rte_eth_dev_pool_ops_supported(uint8_t port_id, const char *pool);
+rte_eth_dev_pool_ops_supported(uint16_t port_id, const char *pool);
 
 #ifdef __cplusplus
 }

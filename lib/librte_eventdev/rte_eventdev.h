@@ -399,6 +399,36 @@ struct rte_event_dev_info {
 int
 rte_event_dev_info_get(uint8_t dev_id, struct rte_event_dev_info *dev_info);
 
+/**
+ * The count of ports.
+ */
+#define RTE_EVENT_DEV_ATTR_PORT_COUNT 0
+/**
+ * The count of queues.
+ */
+#define RTE_EVENT_DEV_ATTR_QUEUE_COUNT 1
+/**
+ * The status of the device, zero for stopped, non-zero for started.
+ */
+#define RTE_EVENT_DEV_ATTR_STARTED 2
+
+/**
+ * Get an attribute from a device.
+ *
+ * @param dev_id Eventdev id
+ * @param attr_id The attribute ID to retrieve
+ * @param[out] attr_value A pointer that will be filled in with the attribute
+ *             value if successful.
+ *
+ * @retval 0 Successfully retrieved attribute value
+ *         -EINVAL Invalid device or  *attr_id* provided, or *attr_value*
+ *         is NULL
+ */
+int
+rte_event_dev_attr_get(uint8_t dev_id, uint32_t attr_id,
+		       uint32_t *attr_value);
+
+
 /* Event device configuration bitmap flags */
 #define RTE_EVENT_DEV_CFG_PER_DEQUEUE_TIMEOUT (1ULL << 0)
 /**< Override the global *dequeue_timeout_ns* and use per dequeue timeout in ns.
@@ -607,31 +637,38 @@ rte_event_queue_setup(uint8_t dev_id, uint8_t queue_id,
 		      const struct rte_event_queue_conf *queue_conf);
 
 /**
- * Get the number of event queues on a specific event device
- *
- * @param dev_id
- *   Event device identifier.
- * @return
- *   - The number of configured event queues
+ * The priority of the queue.
  */
-uint8_t
-rte_event_queue_count(uint8_t dev_id);
+#define RTE_EVENT_QUEUE_ATTR_PRIORITY 0
+/**
+ * The number of atomic flows configured for the queue.
+ */
+#define RTE_EVENT_QUEUE_ATTR_NB_ATOMIC_FLOWS 1
+/**
+ * The number of atomic order sequences configured for the queue.
+ */
+#define RTE_EVENT_QUEUE_ATTR_NB_ATOMIC_ORDER_SEQUENCES 2
+/**
+ * The cfg flags for the queue.
+ */
+#define RTE_EVENT_QUEUE_ATTR_EVENT_QUEUE_CFG 3
 
 /**
- * Get the priority of the event queue on a specific event device
+ * Get an attribute from a queue.
  *
- * @param dev_id
- *   Event device identifier.
- * @param queue_id
- *   Event queue identifier.
- * @return
- *   - If the device has RTE_EVENT_DEV_CAP_QUEUE_QOS capability then the
- *    configured priority of the event queue in
- *    [RTE_EVENT_DEV_PRIORITY_HIGHEST, RTE_EVENT_DEV_PRIORITY_LOWEST] range
- *    else the value RTE_EVENT_DEV_PRIORITY_NORMAL
+ * @param dev_id Eventdev id
+ * @param queue_id Eventdev queue id
+ * @param attr_id The attribute ID to retrieve
+ * @param[out] attr_value A pointer that will be filled in with the attribute
+ *             value if successful
+ *
+ * @retval 0 Successfully returned value
+ *         -EINVAL invalid device, queue or attr_id provided, or attr_value
+ *         was NULL
  */
-uint8_t
-rte_event_queue_priority(uint8_t dev_id, uint8_t queue_id);
+int
+rte_event_queue_attr_get(uint8_t dev_id, uint8_t queue_id, uint32_t attr_id,
+			uint32_t *attr_value);
 
 /* Event port specific APIs */
 
@@ -715,47 +752,33 @@ rte_event_port_setup(uint8_t dev_id, uint8_t port_id,
 		     const struct rte_event_port_conf *port_conf);
 
 /**
- * Get the number of dequeue queue depth configured for event port designated
- * by its *port_id* on a specific event device
- *
- * @param dev_id
- *   Event device identifier.
- * @param port_id
- *   Event port identifier.
- * @return
- *   - The number of configured dequeue queue depth
- *
- * @see rte_event_dequeue_burst()
+ * The queue depth of the port on the enqueue side
  */
-uint8_t
-rte_event_port_dequeue_depth(uint8_t dev_id, uint8_t port_id);
+#define RTE_EVENT_PORT_ATTR_ENQ_DEPTH 0
+/**
+ * The queue depth of the port on the dequeue side
+ */
+#define RTE_EVENT_PORT_ATTR_DEQ_DEPTH 1
+/**
+ * The new event threshold of the port
+ */
+#define RTE_EVENT_PORT_ATTR_NEW_EVENT_THRESHOLD 2
 
 /**
- * Get the number of enqueue queue depth configured for event port designated
- * by its *port_id* on a specific event device
+ * Get an attribute from a port.
  *
- * @param dev_id
- *   Event device identifier.
- * @param port_id
- *   Event port identifier.
- * @return
- *   - The number of configured enqueue queue depth
+ * @param dev_id Eventdev id
+ * @param port_id Eventdev port id
+ * @param attr_id The attribute ID to retrieve
+ * @param[out] attr_value A pointer that will be filled in with the attribute
+ *             value if successful
  *
- * @see rte_event_enqueue_burst()
+ * @retval 0 Successfully returned value
+ *         -EINVAL Invalid device, port or attr_id, or attr_value was NULL
  */
-uint8_t
-rte_event_port_enqueue_depth(uint8_t dev_id, uint8_t port_id);
-
-/**
- * Get the number of ports on a specific event device
- *
- * @param dev_id
- *   Event device identifier.
- * @return
- *   - The number of configured ports
- */
-uint8_t
-rte_event_port_count(uint8_t dev_id);
+int
+rte_event_port_attr_get(uint8_t dev_id, uint8_t port_id, uint32_t attr_id,
+			uint32_t *attr_value);
 
 /**
  * Start an event device.
@@ -871,6 +894,8 @@ rte_event_dev_close(uint8_t dev_id);
 /**< The event generated from cpu for pipelining.
  * Application may use *sub_event_type* to further classify the event
  */
+#define RTE_EVENT_TYPE_ETH_RX_ADAPTER   0x4
+/**< The event generated from event eth Rx adapter */
 #define RTE_EVENT_TYPE_MAX              0x10
 /**< Maximum number of event types */
 
@@ -882,7 +907,10 @@ rte_event_dev_close(uint8_t dev_id);
 #define RTE_EVENT_OP_FORWARD            1
 /**< The CPU use this operation to forward the event to different event queue or
  * change to new application specific flow or schedule type to enable
- * pipelining
+ * pipelining.
+ *
+ * This operation must only be enqueued to the same port that the
+ * event to be forwarded was dequeued from.
  */
 #define RTE_EVENT_OP_RELEASE            2
 /**< Release the flow context associated with the schedule type.
@@ -911,6 +939,9 @@ rte_event_dev_close(uint8_t dev_id);
  * If current flow's scheduler type method is *RTE_SCHED_TYPE_PARALLEL*
  * or no scheduling context is held then this function may be an NOOP,
  * depending on the implementation.
+ *
+ * This operation must only be enqueued to the same port that the
+ * event to be released was dequeued from.
  *
  */
 
@@ -990,6 +1021,45 @@ struct rte_event {
 	};
 };
 
+/* Ethdev Rx adapter capability bitmap flags */
+#define RTE_EVENT_ETH_RX_ADAPTER_CAP_INTERNAL_PORT	0x1
+/**< This flag is sent when the packet transfer mechanism is in HW.
+ * Ethdev can send packets to the event device using internal event port.
+ */
+#define RTE_EVENT_ETH_RX_ADAPTER_CAP_MULTI_EVENTQ	0x2
+/**< Adapter supports multiple event queues per ethdev. Every ethdev
+ * Rx queue can be connected to a unique event queue.
+ */
+#define RTE_EVENT_ETH_RX_ADAPTER_CAP_OVERRIDE_FLOW_ID	0x4
+/**< The application can override the adapter generated flow ID in the
+ * event. This flow ID can be specified when adding an ethdev Rx queue
+ * to the adapter using the ev member of struct rte_event_eth_rx_adapter
+ * @see struct rte_event_eth_rx_adapter_queue_conf::ev
+ * @see struct rte_event_eth_rx_adapter_queue_conf::rx_queue_flags
+ */
+
+/**
+ * Retrieve the event device's ethdev Rx adapter capabilities for the
+ * specified ethernet port
+ *
+ * @param dev_id
+ *   The identifier of the device.
+ *
+ * @param eth_port_id
+ *   The identifier of the ethernet device.
+ *
+ * @param[out] caps
+ *   A pointer to memory filled with Rx event adapter capabilities.
+ *
+ * @return
+ *   - 0: Success, driver provides Rx event adapter capabilities for the
+ *	ethernet device.
+ *   - <0: Error code returned by the driver function.
+ *
+ */
+int
+rte_event_eth_rx_adapter_caps_get(uint8_t dev_id, uint8_t eth_port_id,
+				uint32_t *caps);
 
 struct rte_eventdev_driver;
 struct rte_eventdev_ops;
@@ -1034,12 +1104,10 @@ struct rte_eventdev_data {
 	/**< Number of event ports. */
 	void **ports;
 	/**< Array of pointers to ports. */
-	uint8_t *ports_dequeue_depth;
-	/**< Array of port dequeue depth. */
-	uint8_t *ports_enqueue_depth;
-	/**< Array of port enqueue depth. */
-	uint8_t *queues_prio;
-	/**< Array of queue priority. */
+	struct rte_event_port_conf *ports_cfg;
+	/**< Array of port configuration structures. */
+	struct rte_event_queue_conf *queues_cfg;
+	/**< Array of queue configuration structures. */
 	uint16_t *links_map;
 	/**< Memory to store queues to port connections. */
 	void *dev_private;
@@ -1143,6 +1211,9 @@ __rte_event_enqueue_burst(uint8_t dev_id, uint8_t port_id,
  *
  * The *nb_events* parameter is the number of event objects to enqueue which are
  * supplied in the *ev* array of *rte_event* structure.
+ *
+ * Event operations RTE_EVENT_OP_FORWARD and RTE_EVENT_OP_RELEASE must only be
+ * enqueued to the same port that their associated events were dequeued from.
  *
  * The rte_event_enqueue_burst() function returns the number of
  * events objects it actually enqueued. A return value equal to *nb_events*
@@ -1345,6 +1416,9 @@ rte_event_dequeue_timeout_ticks(uint8_t dev_id, uint64_t ns,
  * rte_event_dequeue_burst() invocation, or invoking rte_event_enqueue_burst()
  * with RTE_EVENT_OP_RELEASE operation can be used to release the
  * contexts early.
+ *
+ * Event operations RTE_EVENT_OP_FORWARD and RTE_EVENT_OP_RELEASE must only be
+ * enqueued to the same port that their associated events were dequeued from.
  *
  * @param dev_id
  *   The identifier of the device.

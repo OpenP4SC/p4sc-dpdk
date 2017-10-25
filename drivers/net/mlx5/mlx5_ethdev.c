@@ -31,6 +31,8 @@
  *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#define _GNU_SOURCE
+
 #include <stddef.h>
 #include <assert.h>
 #include <unistd.h>
@@ -50,6 +52,7 @@
 #include <linux/version.h>
 #include <fcntl.h>
 #include <stdalign.h>
+#include <sys/un.h>
 
 #include <rte_atomic.h>
 #include <rte_ethdev.h>
@@ -162,7 +165,7 @@ priv_get_ifname(const struct priv *priv, char (*ifname)[IF_NAMESIZE])
 	char match[IF_NAMESIZE] = "";
 
 	{
-		MKSTR(path, "%s/device/net", priv->ctx->device->ibdev_path);
+		MKSTR(path, "%s/device/net", priv->ibdev_path);
 
 		dir = opendir(path);
 		if (dir == NULL)
@@ -180,7 +183,7 @@ priv_get_ifname(const struct priv *priv, char (*ifname)[IF_NAMESIZE])
 			continue;
 
 		MKSTR(path, "%s/device/net/%s/%s",
-		      priv->ctx->device->ibdev_path, name,
+		      priv->ibdev_path, name,
 		      (dev_type ? "dev_id" : "dev_port"));
 
 		file = fopen(path, "rb");
@@ -268,11 +271,11 @@ priv_sysfs_read(const struct priv *priv, const char *entry,
 
 	if (priv_is_ib_cntr(entry)) {
 		MKSTR(path, "%s/ports/1/hw_counters/%s",
-		      priv->ctx->device->ibdev_path, entry);
+		      priv->ibdev_path, entry);
 		file = fopen(path, "rb");
 	} else {
 		MKSTR(path, "%s/device/net/%s/%s",
-		      priv->ctx->device->ibdev_path, ifname, entry);
+		      priv->ibdev_path, ifname, entry);
 		file = fopen(path, "rb");
 	}
 	if (file == NULL)
@@ -315,8 +318,7 @@ priv_sysfs_write(const struct priv *priv, const char *entry,
 	if (priv_get_ifname(priv, &ifname))
 		return -1;
 
-	MKSTR(path, "%s/device/net/%s/%s", priv->ctx->device->ibdev_path,
-	      ifname, entry);
+	MKSTR(path, "%s/device/net/%s/%s", priv->ibdev_path, ifname, entry);
 
 	file = fopen(path, "wb");
 	if (file == NULL)
@@ -573,8 +575,29 @@ dev_configure(struct rte_eth_dev *dev)
 	unsigned int i;
 	unsigned int j;
 	unsigned int reta_idx_n;
+	const uint8_t use_app_rss_key =
+		!!dev->data->dev_conf.rx_adv_conf.rss_conf.rss_key_len;
 
-	priv->rss_hf = dev->data->dev_conf.rx_adv_conf.rss_conf.rss_hf;
+	if (use_app_rss_key &&
+	    (dev->data->dev_conf.rx_adv_conf.rss_conf.rss_key_len !=
+	     rss_hash_default_key_len)) {
+		/* MLX5 RSS only support 40bytes key. */
+		return EINVAL;
+	}
+	priv->rss_conf.rss_key =
+		rte_realloc(priv->rss_conf.rss_key,
+			    rss_hash_default_key_len, 0);
+	if (!priv->rss_conf.rss_key) {
+		ERROR("cannot allocate RSS hash key memory (%u)", rxqs_n);
+		return ENOMEM;
+	}
+	memcpy(priv->rss_conf.rss_key,
+	       use_app_rss_key ?
+	       dev->data->dev_conf.rx_adv_conf.rss_conf.rss_key :
+	       rss_hash_default_key,
+	       rss_hash_default_key_len);
+	priv->rss_conf.rss_key_len = rss_hash_default_key_len;
+	priv->rss_conf.rss_hf = dev->data->dev_conf.rx_adv_conf.rss_conf.rss_hf;
 	priv->rxqs = (void *)dev->data->rx_queues;
 	priv->txqs = (void *)dev->data->tx_queues;
 	if (txqs_n != priv->txqs_n) {
@@ -674,7 +697,9 @@ mlx5_dev_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *info)
 		  DEV_RX_OFFLOAD_UDP_CKSUM |
 		  DEV_RX_OFFLOAD_TCP_CKSUM) :
 		 0) |
-		(priv->hw_vlan_strip ? DEV_RX_OFFLOAD_VLAN_STRIP : 0);
+		(priv->hw_vlan_strip ? DEV_RX_OFFLOAD_VLAN_STRIP : 0) |
+		DEV_RX_OFFLOAD_TIMESTAMP;
+
 	if (!priv->mps)
 		info->tx_offload_capa = DEV_TX_OFFLOAD_VLAN_INSERT;
 	if (priv->hw_csum)
@@ -692,9 +717,7 @@ mlx5_dev_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *info)
 		info->if_index = if_nametoindex(ifname);
 	info->reta_size = priv->reta_idx_n ?
 		priv->reta_idx_n : priv->ind_table_max_size;
-	info->hash_key_size = ((*priv->rss_conf) ?
-			       (*priv->rss_conf)[0]->rss_key_len :
-			       0);
+	info->hash_key_size = priv->rss_conf.rss_key_len;
 	info->speed_capa = priv->link_speed_capa;
 	priv_unlock(priv);
 }
@@ -1237,6 +1260,23 @@ mlx5_dev_interrupt_handler(void *cb_arg)
 }
 
 /**
+ * Handle interrupts from the socket.
+ *
+ * @param cb_arg
+ *   Callback argument.
+ */
+static void
+mlx5_dev_handler_socket(void *cb_arg)
+{
+	struct rte_eth_dev *dev = cb_arg;
+	struct priv *priv = dev->data->dev_private;
+
+	priv_lock(priv);
+	priv_socket_handle(priv);
+	priv_unlock(priv);
+}
+
+/**
  * Uninstall interrupt handler.
  *
  * @param priv
@@ -1247,17 +1287,20 @@ mlx5_dev_interrupt_handler(void *cb_arg)
 void
 priv_dev_interrupt_handler_uninstall(struct priv *priv, struct rte_eth_dev *dev)
 {
-	if (!dev->data->dev_conf.intr_conf.lsc &&
-		!dev->data->dev_conf.intr_conf.rmv)
-		return;
-	rte_intr_callback_unregister(&priv->intr_handle,
-				     mlx5_dev_interrupt_handler,
-				     dev);
+	if (dev->data->dev_conf.intr_conf.lsc ||
+	    dev->data->dev_conf.intr_conf.rmv)
+		rte_intr_callback_unregister(&priv->intr_handle,
+					     mlx5_dev_interrupt_handler, dev);
+	if (priv->primary_socket)
+		rte_intr_callback_unregister(&priv->intr_handle_socket,
+					     mlx5_dev_handler_socket, dev);
 	if (priv->pending_alarm)
 		rte_eal_alarm_cancel(mlx5_dev_link_status_handler, dev);
 	priv->pending_alarm = 0;
 	priv->intr_handle.fd = 0;
 	priv->intr_handle.type = RTE_INTR_HANDLE_UNKNOWN;
+	priv->intr_handle_socket.fd = 0;
+	priv->intr_handle_socket.type = RTE_INTR_HANDLE_UNKNOWN;
 }
 
 /**
@@ -1273,9 +1316,7 @@ priv_dev_interrupt_handler_install(struct priv *priv, struct rte_eth_dev *dev)
 {
 	int rc, flags;
 
-	if (!dev->data->dev_conf.intr_conf.lsc &&
-		!dev->data->dev_conf.intr_conf.rmv)
-		return;
+	assert(!mlx5_is_secondary());
 	assert(priv->ctx->async_fd > 0);
 	flags = fcntl(priv->ctx->async_fd, F_GETFL);
 	rc = fcntl(priv->ctx->async_fd, F_SETFL, flags | O_NONBLOCK);
@@ -1283,12 +1324,21 @@ priv_dev_interrupt_handler_install(struct priv *priv, struct rte_eth_dev *dev)
 		INFO("failed to change file descriptor async event queue");
 		dev->data->dev_conf.intr_conf.lsc = 0;
 		dev->data->dev_conf.intr_conf.rmv = 0;
-	} else {
+	}
+	if (dev->data->dev_conf.intr_conf.lsc ||
+	    dev->data->dev_conf.intr_conf.rmv) {
 		priv->intr_handle.fd = priv->ctx->async_fd;
 		priv->intr_handle.type = RTE_INTR_HANDLE_EXT;
 		rte_intr_callback_register(&priv->intr_handle,
-					   mlx5_dev_interrupt_handler,
-					   dev);
+					   mlx5_dev_interrupt_handler, dev);
+	}
+
+	rc = priv_socket_init(priv);
+	if (!rc && priv->primary_socket) {
+		priv->intr_handle_socket.fd = priv->primary_socket;
+		priv->intr_handle_socket.type = RTE_INTR_HANDLE_EXT;
+		rte_intr_callback_register(&priv->intr_handle_socket,
+					   mlx5_dev_handler_socket, dev);
 	}
 }
 
@@ -1296,7 +1346,9 @@ priv_dev_interrupt_handler_install(struct priv *priv, struct rte_eth_dev *dev)
  * Change the link state (UP / DOWN).
  *
  * @param priv
- *   Pointer to Ethernet device structure.
+ *   Pointer to private data structure.
+ * @param dev
+ *   Pointer to rte_eth_dev structure.
  * @param up
  *   Nonzero for link up, otherwise link down.
  *
@@ -1304,17 +1356,16 @@ priv_dev_interrupt_handler_install(struct priv *priv, struct rte_eth_dev *dev)
  *   0 on success, errno value on failure.
  */
 static int
-priv_set_link(struct priv *priv, int up)
+priv_dev_set_link(struct priv *priv, struct rte_eth_dev *dev, int up)
 {
-	struct rte_eth_dev *dev = priv->dev;
 	int err;
 
 	if (up) {
 		err = priv_set_flags(priv, ~IFF_UP, IFF_UP);
 		if (err)
 			return err;
-		priv_select_tx_function(priv);
-		priv_select_rx_function(priv);
+		priv_dev_select_tx_function(priv, dev);
+		priv_dev_select_rx_function(priv, dev);
 	} else {
 		err = priv_set_flags(priv, ~IFF_UP, ~IFF_UP);
 		if (err)
@@ -1341,7 +1392,7 @@ mlx5_set_link_down(struct rte_eth_dev *dev)
 	int err;
 
 	priv_lock(priv);
-	err = priv_set_link(priv, 0);
+	err = priv_dev_set_link(priv, dev, 0);
 	priv_unlock(priv);
 	return err;
 }
@@ -1362,7 +1413,7 @@ mlx5_set_link_up(struct rte_eth_dev *dev)
 	int err;
 
 	priv_lock(priv);
-	err = priv_set_link(priv, 1);
+	err = priv_dev_set_link(priv, dev, 1);
 	priv_unlock(priv);
 	return err;
 }
@@ -1371,29 +1422,33 @@ mlx5_set_link_up(struct rte_eth_dev *dev)
  * Configure the TX function to use.
  *
  * @param priv
- *   Pointer to private structure.
+ *   Pointer to private data structure.
+ * @param dev
+ *   Pointer to rte_eth_dev structure.
  */
 void
-priv_select_tx_function(struct priv *priv)
+priv_dev_select_tx_function(struct priv *priv, struct rte_eth_dev *dev)
 {
-	priv->dev->tx_pkt_burst = mlx5_tx_burst;
+	assert(priv != NULL);
+	assert(dev != NULL);
+	dev->tx_pkt_burst = mlx5_tx_burst;
 	/* Select appropriate TX function. */
 	if (priv->mps == MLX5_MPW_ENHANCED) {
 		if (priv_check_vec_tx_support(priv) > 0) {
 			if (priv_check_raw_vec_tx_support(priv) > 0)
-				priv->dev->tx_pkt_burst = mlx5_tx_burst_raw_vec;
+				dev->tx_pkt_burst = mlx5_tx_burst_raw_vec;
 			else
-				priv->dev->tx_pkt_burst = mlx5_tx_burst_vec;
+				dev->tx_pkt_burst = mlx5_tx_burst_vec;
 			DEBUG("selected Enhanced MPW TX vectorized function");
 		} else {
-			priv->dev->tx_pkt_burst = mlx5_tx_burst_empw;
+			dev->tx_pkt_burst = mlx5_tx_burst_empw;
 			DEBUG("selected Enhanced MPW TX function");
 		}
 	} else if (priv->mps && priv->txq_inline) {
-		priv->dev->tx_pkt_burst = mlx5_tx_burst_mpw_inline;
+		dev->tx_pkt_burst = mlx5_tx_burst_mpw_inline;
 		DEBUG("selected MPW inline TX function");
 	} else if (priv->mps) {
-		priv->dev->tx_pkt_burst = mlx5_tx_burst_mpw;
+		dev->tx_pkt_burst = mlx5_tx_burst_mpw;
 		DEBUG("selected MPW TX function");
 	}
 }
@@ -1402,15 +1457,19 @@ priv_select_tx_function(struct priv *priv)
  * Configure the RX function to use.
  *
  * @param priv
- *   Pointer to private structure.
+ *   Pointer to private data structure.
+ * @param dev
+ *   Pointer to rte_eth_dev structure.
  */
 void
-priv_select_rx_function(struct priv *priv)
+priv_dev_select_rx_function(struct priv *priv, struct rte_eth_dev *dev)
 {
+	assert(priv != NULL);
+	assert(dev != NULL);
 	if (priv_check_vec_rx_support(priv) > 0) {
-		priv->dev->rx_pkt_burst = mlx5_rx_burst_vec;
+		dev->rx_pkt_burst = mlx5_rx_burst_vec;
 		DEBUG("selected RX vectorized function");
 	} else {
-		priv->dev->rx_pkt_burst = mlx5_rx_burst;
+		dev->rx_pkt_burst = mlx5_rx_burst;
 	}
 }

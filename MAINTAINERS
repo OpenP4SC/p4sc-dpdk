@@ -88,6 +88,7 @@ EAL API and common code
 F: lib/librte_eal/common/*
 F: lib/librte_eal/common/include/*
 F: lib/librte_eal/common/include/generic/
+F: lib/librte_eal/rte_eal_version.map
 F: doc/guides/prog_guide/env_abstraction_layer.rst
 F: test/test/test_alarm.c
 F: test/test/test_atomic.c
@@ -146,15 +147,20 @@ F: lib/librte_eal/common/rte_service.c
 F: doc/guides/prog_guide/service_cores.rst
 F: test/test/test_service_cores.c
 
+Bitmap
+M: Cristian Dumitrescu <cristian.dumitrescu@intel.com>
+F: lib/librte_eal/common/include/rte_bitmap.h
+F: test/test/test_bitmap.c
+
 ARM v7
 M: Jan Viktorin <viktorin@rehivetech.com>
-M: Jianbo Liu <jianbo.liu@linaro.org>
+M: Jianbo Liu <jianbo.liu@arm.com>
 F: lib/librte_eal/common/arch/arm/
 F: lib/librte_eal/common/include/arch/arm/
 
 ARM v8
 M: Jerin Jacob <jerin.jacob@caviumnetworks.com>
-M: Jianbo Liu <jianbo.liu@linaro.org>
+M: Jianbo Liu <jianbo.liu@arm.com>
 F: lib/librte_eal/common/include/arch/arm/*_64.h
 F: lib/librte_net/net_crc_neon.h
 F: lib/librte_acl/acl_run_neon.*
@@ -171,6 +177,7 @@ M: Chao Zhu <chaozhu@linux.vnet.ibm.com>
 F: lib/librte_eal/common/arch/ppc_64/
 F: lib/librte_eal/common/include/arch/ppc_64/
 F: drivers/net/i40e/i40e_rxtx_vec_altivec.c
+F: examples/l3fwd/*altivec.h
 
 Intel x86
 M: Bruce Richardson <bruce.richardson@intel.com>
@@ -191,16 +198,6 @@ F: lib/librte_eal/linuxapp/eal/*uio*
 Linux VFIO
 M: Anatoly Burakov <anatoly.burakov@intel.com>
 F: lib/librte_eal/linuxapp/eal/*vfio*
-
-Linux Xen
-M: Jianfeng Tan <jianfeng.tan@intel.com>
-F: lib/librte_eal/linuxapp/xen_dom0/
-F: lib/librte_eal/linuxapp/eal/*xen*
-F: lib/librte_eal/linuxapp/eal/include/exec-env/rte_dom0_common.h
-F: drivers/net/xenvirt/
-F: doc/guides/xen/
-F: examples/vhost_xen/
-F: doc/guides/nics/features/xenvirt.ini
 
 FreeBSD EAL (with overlaps)
 M: Bruce Richardson <bruce.richardson@intel.com>
@@ -260,6 +257,10 @@ M: Cristian Dumitrescu <cristian.dumitrescu@intel.com>
 T: git://dpdk.org/next/dpdk-next-tm
 F: lib/librte_ether/rte_tm*
 
+Traffic Metering and Policing API - EXPERIMENTAL
+M: Cristian Dumitrescu <cristian.dumitrescu@intel.com>
+F: lib/librte_ether/rte_mtr*
+
 Crypto API
 M: Declan Doherty <declan.doherty@intel.com>
 F: lib/librte_cryptodev/
@@ -272,6 +273,12 @@ T: git://dpdk.org/next/dpdk-next-eventdev
 F: lib/librte_eventdev/
 F: drivers/event/skeleton/
 F: test/test/test_eventdev.c
+
+Eventdev Ethdev Rx Adapter API - EXPERIMENTAL
+M: Nikhil Rao <nikhil.rao@intel.com>
+T: git://dpdk.org/next/dpdk-next-eventdev
+F: lib/librte_eventdev/*eth_rx_adapter*
+F: test/test/test_event_eth_rx_adapter.c
 
 
 Networking Drivers
@@ -340,6 +347,14 @@ F: drivers/net/liquidio/
 F: doc/guides/nics/liquidio.rst
 F: doc/guides/nics/features/liquidio.ini
 
+Cavium OcteonTX
+M: Santosh Shukla <santosh.shukla@caviumnetworks.com>
+M: Jerin Jacob <jerin.jacob@caviumnetworks.com>
+F: drivers/mempool/octeontx/
+F: drivers/net/octeontx/
+F: doc/guides/nics/octeontx.rst
+F: doc/guides/nics/features/octeontx.ini
+
 Chelsio cxgbe
 M: Rahul Lakkireddy <rahul.lakkireddy@chelsio.com>
 F: drivers/net/cxgbe/
@@ -396,6 +411,16 @@ M: Yongseok Koh <yskoh@mellanox.com>
 F: drivers/net/mlx5/
 F: doc/guides/nics/mlx5.rst
 F: doc/guides/nics/features/mlx5.ini
+
+Marvell mrvl
+M: Jacek Siuda <jck@semihalf.com>
+M: Tomasz Duszynski <tdu@semihalf.com>
+M: Dmitri Epshtein <dima@marvell.com>
+M: Natalie Samsonov <nsamsono@marvell.com>
+M: Jianbo Liu <jianbo.liu@arm.com>
+F: drivers/net/mrvl/
+F: doc/guides/nics/mrvl.rst
+F: doc/guides/nics/features/mrvl.ini
 
 Netcope szedata2
 M: Matej Vido <vido@cesnet.cz>
@@ -524,6 +549,11 @@ M: Gaetan Rivet <gaetan.rivet@6wind.com>
 F: drivers/net/failsafe/
 F: doc/guides/nics/fail_safe.rst
 
+Softnic PMD
+M: Jasvinder Singh <jasvinder.singh@intel.com>
+M: Cristian Dumitrescu <cristian.dumitrescu@intel.com>
+F: drivers/net/softnic/
+
 
 Crypto Drivers
 --------------
@@ -531,13 +561,18 @@ M: Pablo de Lara <pablo.de.lara.guarch@intel.com>
 T: git://dpdk.org/next/dpdk-next-crypto
 F: doc/guides/cryptodevs/features/default.ini
 
-ARMv8 Crypto PMD
+ARMv8 Crypto
 M: Jerin Jacob <jerin.jacob@caviumnetworks.com>
 F: drivers/crypto/armv8/
 F: doc/guides/cryptodevs/armv8.rst
 F: doc/guides/cryptodevs/features/armv8.ini
 
-Intel AES-NI GCM PMD
+Crypto Scheduler
+M: Fan Zhang <roy.fan.zhang@intel.com>
+F: drivers/crypto/scheduler/
+F: doc/guides/cryptodevs/scheduler.rst
+
+Intel AES-NI GCM
 M: Declan Doherty <declan.doherty@intel.com>
 F: drivers/crypto/aesni_gcm/
 F: doc/guides/cryptodevs/aesni_gcm.rst
@@ -557,6 +592,35 @@ F: drivers/crypto/qat/
 F: doc/guides/cryptodevs/qat.rst
 F: doc/guides/cryptodevs/features/qat.ini
 
+KASUMI
+M: Pablo de Lara <pablo.de.lara.guarch@intel.com>
+F: drivers/crypto/kasumi/
+F: doc/guides/cryptodevs/kasumi.rst
+F: doc/guides/cryptodevs/features/kasumi.ini
+
+Marvell Mrvl
+M: Jacek Siuda <jck@semihalf.com>
+M: Tomasz Duszynski <tdu@semihalf.com>
+M: Dmitri Epshtein <dima@marvell.com>
+M: Natalie Samsonov <nsamsono@marvell.com>
+M: Jianbo Liu <jianbo.liu@arm.org>
+F: drivers/crypto/mrvl/
+F: doc/guides/cryptodevs/mrvl.rst
+F: doc/guides/cryptodevs/features/mrvl.ini
+
+Null Crypto
+M: Declan Doherty <declan.doherty@intel.com>
+F: drivers/crypto/null/
+F: doc/guides/cryptodevs/null.rst
+F: doc/guides/cryptodevs/features/null.ini
+
+NXP DPAA_SEC
+M: Akhil Goyal <akhil.goyal@nxp.com>
+M: Hemant Agrawal <hemant.agrawal@nxp.com>
+F: drivers/crypto/dpaa_sec/
+F: doc/guides/cryptodevs/dpaa_sec.rst
+F: doc/guides/cryptodevs/features/dpaa_sec.ini
+
 NXP DPAA2_SEC
 M: Akhil Goyal <akhil.goyal@nxp.com>
 M: Hemant Agrawal <hemant.agrawal@nxp.com>
@@ -564,40 +628,23 @@ F: drivers/crypto/dpaa2_sec/
 F: doc/guides/cryptodevs/dpaa2_sec.rst
 F: doc/guides/cryptodevs/features/dpaa2_sec.ini
 
-SNOW 3G PMD
-M: Pablo de Lara <pablo.de.lara.guarch@intel.com>
-F: drivers/crypto/snow3g/
-F: doc/guides/cryptodevs/snow3g.rst
-F: doc/guides/cryptodevs/features/snow3g.ini
-
-KASUMI PMD
-M: Pablo de Lara <pablo.de.lara.guarch@intel.com>
-F: drivers/crypto/kasumi/
-F: doc/guides/cryptodevs/kasumi.rst
-F: doc/guides/cryptodevs/features/kasumi.ini
-
-ZUC PMD
-M: Pablo de Lara <pablo.de.lara.guarch@intel.com>
-F: drivers/crypto/zuc/
-F: doc/guides/cryptodevs/zuc.rst
-F: doc/guides/cryptodevs/features/zuc.ini
-
-OpenSSL PMD
+OpenSSL
 M: Declan Doherty <declan.doherty@intel.com>
 F: drivers/crypto/openssl/
 F: doc/guides/cryptodevs/openssl.rst
 F: doc/guides/cryptodevs/features/openssl.ini
 
-Null Crypto PMD
-M: Declan Doherty <declan.doherty@intel.com>
-F: drivers/crypto/null/
-F: doc/guides/cryptodevs/null.rst
-F: doc/guides/cryptodevs/features/null.ini
+SNOW 3G
+M: Pablo de Lara <pablo.de.lara.guarch@intel.com>
+F: drivers/crypto/snow3g/
+F: doc/guides/cryptodevs/snow3g.rst
+F: doc/guides/cryptodevs/features/snow3g.ini
 
-Crypto Scheduler PMD
-M: Fan Zhang <roy.fan.zhang@intel.com>
-F: drivers/crypto/scheduler/
-F: doc/guides/cryptodevs/scheduler.rst
+ZUC
+M: Pablo de Lara <pablo.de.lara.guarch@intel.com>
+F: drivers/crypto/zuc/
+F: doc/guides/cryptodevs/zuc.rst
+F: doc/guides/cryptodevs/features/zuc.ini
 
 
 Eventdev Drivers
@@ -654,6 +701,18 @@ M: Jiayu Hu <jiayu.hu@intel.com>
 F: lib/librte_gro/
 F: doc/guides/prog_guide/generic_receive_offload_lib.rst
 
+Generic Segmentation Offload
+M: Jiayu Hu <jiayu.hu@intel.com>
+M: Mark Kavanagh <mark.b.kavanagh@intel.com>
+F: lib/librte_gso/
+F: doc/guides/prog_guide/generic_segmentation_offload_lib.rst
+
+Flow Classify - EXPERIMENTAL
+M: Bernard Iremonger <bernard.iremonger@intel.com>
+F: lib/librte_flow_classify/
+F: test/test/test_flow_classify*
+F: examples/flow_classify/
+
 Distributor
 M: Bruce Richardson <bruce.richardson@intel.com>
 M: David Hunt <david.hunt@intel.com>
@@ -686,7 +745,6 @@ F: lib/librte_pdump/
 F: doc/guides/prog_guide/pdump_lib.rst
 F: app/pdump/
 F: doc/guides/tools/pdump.rst
-
 
 Packet Framework
 ----------------
@@ -739,6 +797,13 @@ F: test/test/test_lpm*
 F: test/test/test_func_reentrancy.c
 F: test/test/test_xmmt_ops.h
 
+Membership - EXPERIMENTAL
+M: Yipeng Wang <yipeng1.wang@intel.com>
+M: Sameh Gobriel <sameh.gobriel@intel.com>
+F: lib/librte_member/
+F: doc/guides/prog_guide/member_lib.rst
+F: test/test/test_member*
+
 Traffic metering
 M: Cristian Dumitrescu <cristian.dumitrescu@intel.com>
 F: lib/librte_meter/
@@ -746,7 +811,6 @@ F: doc/guides/sample_app_ug/qos_scheduler.rst
 F: test/test/test_meter.c
 F: examples/qos_meter/
 F: doc/guides/sample_app_ug/qos_metering.rst
-
 
 Other libraries
 ---------------
@@ -912,6 +976,10 @@ M: Bruce Richardson <bruce.richardson@intel.com>
 M: John McNamara <john.mcnamara@intel.com>
 F: examples/rxtx_callbacks/
 F: doc/guides/sample_app_ug/rxtx_callbacks.rst
+
+M: Harry van Haaren <harry.van.haaren@intel.com>
+F: examples/service_cores/
+F: doc/guides/sample_app_ug/service_cores.rst
 
 M: Bruce Richardson <bruce.richardson@intel.com>
 M: John McNamara <john.mcnamara@intel.com>

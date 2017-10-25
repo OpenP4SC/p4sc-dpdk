@@ -69,12 +69,14 @@ CFLAGS_BASE_DRIVER += -Wno-unused-but-set-variable
 # value is set
 CFLAGS_sfc_ef10_tx.o += -wd3656
 endif
+LDLIBS += -lrte_eal -lrte_mbuf -lrte_mempool -lrte_ring
+LDLIBS += -lrte_ethdev -lrte_net -lrte_kvargs
 
 #
 # List of base driver object files for which
 # special CFLAGS above should be applied
 #
-BASE_DRIVER_OBJS=$(patsubst %.c,%.o,$(notdir $(wildcard $(SRCDIR)/base/*.c)))
+BASE_DRIVER_OBJS=$(sort $(patsubst %.c,%.o,$(notdir $(wildcard $(SRCDIR)/base/*.c))))
 $(foreach obj, $(BASE_DRIVER_OBJS), \
   $(eval CFLAGS_$(obj)+=$(CFLAGS_BASE_DRIVER)))
 

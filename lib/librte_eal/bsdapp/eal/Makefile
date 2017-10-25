@@ -46,9 +46,9 @@ LDLIBS += -lexecinfo
 LDLIBS += -lpthread
 LDLIBS += -lgcc_s
 
-EXPORT_MAP := rte_eal_version.map
+EXPORT_MAP := ../../rte_eal_version.map
 
-LIBABIVER := 5
+LIBABIVER := 6
 
 # specific to bsdapp exec-env
 SRCS-$(CONFIG_RTE_EXEC_ENV_BSDAPP) := eal.c
@@ -92,6 +92,25 @@ SRCS-$(CONFIG_RTE_EXEC_ENV_BSDAPP) += rte_service.c
 # from arch dir
 SRCS-$(CONFIG_RTE_EXEC_ENV_BSDAPP) += rte_cpuflags.c
 SRCS-$(CONFIG_RTE_ARCH_X86) += rte_spinlock.c
+SRCS-y += rte_cycles.c
+
+# for run-time dispatch of memcpy
+SRCS-$(CONFIG_RTE_ARCH_X86) += rte_memcpy.c
+SRCS-$(CONFIG_RTE_ARCH_X86) += rte_memcpy_sse.c
+
+# if the compiler supports AVX512, add avx512 file
+ifneq ($(findstring CC_SUPPORT_AVX512F,$(MACHINE_CFLAGS)),)
+SRCS-$(CONFIG_RTE_ARCH_X86) += rte_memcpy_avx512f.c
+CFLAGS_rte_memcpy_avx512f.o += -mavx512f
+CFLAGS_rte_memcpy_avx512f.o += -DRTE_MACHINE_CPUFLAG_AVX512F
+endif
+
+# if the compiler supports AVX2, add avx2 file
+ifneq ($(findstring CC_SUPPORT_AVX2,$(MACHINE_CFLAGS)),)
+SRCS-$(CONFIG_RTE_ARCH_X86) += rte_memcpy_avx2.c
+CFLAGS_rte_memcpy_avx2.o += -mavx2
+CFLAGS_rte_memcpy_avx2.o += -DRTE_MACHINE_CPUFLAG_AVX2
+endif
 
 CFLAGS_eal_common_cpuflags.o := $(CPUFLAGS_LIST)
 
@@ -107,7 +126,7 @@ CFLAGS_eal_thread.o += -Wno-return-type
 CFLAGS_eal_hpet.o += -Wno-return-type
 endif
 
-INC := rte_interrupts.h
+INC :=  # no bsdapp specific headers
 
 SYMLINK-$(CONFIG_RTE_EXEC_ENV_BSDAPP)-include/exec-env := \
 	$(addprefix include/exec-env/,$(INC))

@@ -56,7 +56,9 @@ Network Interface Controller Drivers
     liquidio
     mlx4
     mlx5
+    mrvl
     nfp
+    octeontx
     qede
     sfc_efx
     szedata2

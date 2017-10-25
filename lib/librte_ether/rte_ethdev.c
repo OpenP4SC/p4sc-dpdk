@@ -179,11 +179,9 @@ rte_eth_dev_allocated(const char *name)
 	unsigned i;
 
 	for (i = 0; i < RTE_MAX_ETHPORTS; i++) {
-		if (rte_eth_devices[i].state == RTE_ETH_DEV_ATTACHED &&
-				rte_eth_devices[i].device) {
-			if (!strcmp(rte_eth_devices[i].device->name, name))
-				return &rte_eth_devices[i];
-		}
+		if ((rte_eth_devices[i].state == RTE_ETH_DEV_ATTACHED) &&
+		    strcmp(rte_eth_devices[i].data->name, name) == 0)
+			return &rte_eth_devices[i];
 	}
 	return NULL;
 }
@@ -320,7 +318,7 @@ rte_eth_dev_count(void)
 int
 rte_eth_dev_get_name_by_port(uint16_t port_id, char *name)
 {
-	const char *tmp;
+	char *tmp;
 
 	RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -EINVAL);
 
@@ -331,7 +329,7 @@ rte_eth_dev_get_name_by_port(uint16_t port_id, char *name)
 
 	/* shouldn't check 'rte_eth_devices[i].data',
 	 * because it might be overwritten by VDEV PMD */
-	tmp = rte_eth_devices[port_id].device->name;
+	tmp = rte_eth_dev_data[port_id].name;
 	strcpy(name, tmp);
 	return 0;
 }
@@ -339,7 +337,6 @@ rte_eth_dev_get_name_by_port(uint16_t port_id, char *name)
 int
 rte_eth_dev_get_port_by_name(const char *name, uint16_t *port_id)
 {
-	int ret;
 	int i;
 
 	if (name == NULL) {
@@ -348,13 +345,11 @@ rte_eth_dev_get_port_by_name(const char *name, uint16_t *port_id)
 	}
 
 	RTE_ETH_FOREACH_DEV(i) {
-		if (!rte_eth_devices[i].device)
-			continue;
+		if (!strncmp(name,
+			rte_eth_dev_data[i].name, strlen(name))) {
 
-		ret = strncmp(name, rte_eth_devices[i].device->name,
-				strlen(name));
-		if (ret == 0) {
 			*port_id = i;
+
 			return 0;
 		}
 	}
@@ -437,8 +432,8 @@ rte_eth_dev_detach(uint16_t port_id, char *name)
 	if (rte_eth_dev_is_detachable(port_id))
 		goto err;
 
-	snprintf(name, RTE_DEV_NAME_MAX_LEN, "%s",
-		 rte_eth_devices[port_id].device->name);
+	snprintf(name, sizeof(rte_eth_devices[port_id].data->name),
+		 "%s", rte_eth_devices[port_id].data->name);
 
 	ret = rte_eal_dev_detach(rte_eth_devices[port_id].device);
 	if (ret < 0)
@@ -715,6 +710,8 @@ rte_eth_convert_rx_offload_bitfield(const struct rte_eth_rxmode *rxmode,
 		offloads |= DEV_RX_OFFLOAD_SCATTER;
 	if (rxmode->enable_lro == 1)
 		offloads |= DEV_RX_OFFLOAD_TCP_LRO;
+	if (rxmode->hw_timestamp == 1)
+		offloads |= DEV_RX_OFFLOAD_TIMESTAMP;
 
 	*rx_offloads = offloads;
 }
@@ -763,6 +760,10 @@ rte_eth_convert_rx_offloads(const uint64_t rx_offloads,
 		rxmode->enable_lro = 1;
 	else
 		rxmode->enable_lro = 0;
+	if (rx_offloads & DEV_RX_OFFLOAD_TIMESTAMP)
+		rxmode->hw_timestamp = 1;
+	else
+		rxmode->hw_timestamp = 0;
 }
 
 int
@@ -1531,21 +1532,22 @@ rte_eth_stats_get(uint16_t port_id, struct rte_eth_stats *stats)
 
 	RTE_FUNC_PTR_OR_ERR_RET(*dev->dev_ops->stats_get, -ENOTSUP);
 	stats->rx_nombuf = dev->data->rx_mbuf_alloc_failed;
-	(*dev->dev_ops->stats_get)(dev, stats);
-	return 0;
+	return (*dev->dev_ops->stats_get)(dev, stats);
 }
 
-void
+int
 rte_eth_stats_reset(uint16_t port_id)
 {
 	struct rte_eth_dev *dev;
 
-	RTE_ETH_VALID_PORTID_OR_RET(port_id);
+	RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -ENODEV);
 	dev = &rte_eth_devices[port_id];
 
-	RTE_FUNC_PTR_OR_RET(*dev->dev_ops->stats_reset);
+	RTE_FUNC_PTR_OR_ERR_RET(*dev->dev_ops->stats_reset, -ENOTSUP);
 	(*dev->dev_ops->stats_reset)(dev);
 	dev->data->rx_mbuf_alloc_failed = 0;
+
+	return 0;
 }
 
 static int
@@ -1621,121 +1623,69 @@ rte_eth_xstats_get_id_by_name(uint16_t port_id, const char *xstat_name,
 	return -EINVAL;
 }
 
+/* retrieve ethdev extended statistics names */
 int
 rte_eth_xstats_get_names_by_id(uint16_t port_id,
 	struct rte_eth_xstat_name *xstats_names, unsigned int size,
 	uint64_t *ids)
 {
-	/* Get all xstats */
+	struct rte_eth_xstat_name *xstats_names_copy;
+	unsigned int expected_entries;
+	struct rte_eth_dev *dev;
+	unsigned int i;
+
+	RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -ENODEV);
+	expected_entries = get_xstats_count(port_id);
+	dev = &rte_eth_devices[port_id];
+
+	/* Return max number of stats if no ids given */
 	if (!ids) {
-		struct rte_eth_dev *dev;
-		int cnt_used_entries;
-		int cnt_expected_entries;
-		int cnt_driver_entries;
-		uint32_t idx, id_queue;
-		uint16_t num_q;
-
-		cnt_expected_entries = get_xstats_count(port_id);
-		if (xstats_names == NULL || cnt_expected_entries < 0 ||
-				(int)size < cnt_expected_entries)
-			return cnt_expected_entries;
-
-		/* port_id checked in get_xstats_count() */
-		dev = &rte_eth_devices[port_id];
-		cnt_used_entries = 0;
-
-		for (idx = 0; idx < RTE_NB_STATS; idx++) {
-			snprintf(xstats_names[cnt_used_entries].name,
-				sizeof(xstats_names[0].name),
-				"%s", rte_stats_strings[idx].name);
-			cnt_used_entries++;
-		}
-		num_q = RTE_MIN(dev->data->nb_rx_queues,
-				RTE_ETHDEV_QUEUE_STAT_CNTRS);
-		for (id_queue = 0; id_queue < num_q; id_queue++) {
-			for (idx = 0; idx < RTE_NB_RXQ_STATS; idx++) {
-				snprintf(xstats_names[cnt_used_entries].name,
-					sizeof(xstats_names[0].name),
-					"rx_q%u%s",
-					id_queue,
-					rte_rxq_stats_strings[idx].name);
-				cnt_used_entries++;
-			}
-
-		}
-		num_q = RTE_MIN(dev->data->nb_tx_queues,
-				RTE_ETHDEV_QUEUE_STAT_CNTRS);
-		for (id_queue = 0; id_queue < num_q; id_queue++) {
-			for (idx = 0; idx < RTE_NB_TXQ_STATS; idx++) {
-				snprintf(xstats_names[cnt_used_entries].name,
-					sizeof(xstats_names[0].name),
-					"tx_q%u%s",
-					id_queue,
-					rte_txq_stats_strings[idx].name);
-				cnt_used_entries++;
-			}
-		}
-
-		if (dev->dev_ops->xstats_get_names_by_id != NULL) {
-			/* If there are any driver-specific xstats, append them
-			 * to end of list.
-			 */
-			cnt_driver_entries =
-				(*dev->dev_ops->xstats_get_names_by_id)(
-				dev,
-				xstats_names + cnt_used_entries,
-				NULL,
-				size - cnt_used_entries);
-			if (cnt_driver_entries < 0)
-				return cnt_driver_entries;
-			cnt_used_entries += cnt_driver_entries;
-
-		} else if (dev->dev_ops->xstats_get_names != NULL) {
-			/* If there are any driver-specific xstats, append them
-			 * to end of list.
-			 */
-			cnt_driver_entries = (*dev->dev_ops->xstats_get_names)(
-				dev,
-				xstats_names + cnt_used_entries,
-				size - cnt_used_entries);
-			if (cnt_driver_entries < 0)
-				return cnt_driver_entries;
-			cnt_used_entries += cnt_driver_entries;
-		}
-
-		return cnt_used_entries;
+		if (!xstats_names)
+			return expected_entries;
+		else if (xstats_names && size < expected_entries)
+			return expected_entries;
 	}
-	/* Get only xstats given by IDS */
-	else {
-		uint16_t len, i;
-		struct rte_eth_xstat_name *xstats_names_copy;
 
-		len = rte_eth_xstats_get_names_by_id(port_id, NULL, 0, NULL);
+	if (ids && !xstats_names)
+		return -EINVAL;
 
-		xstats_names_copy =
-				malloc(sizeof(struct rte_eth_xstat_name) * len);
-		if (!xstats_names_copy) {
-			RTE_PMD_DEBUG_TRACE(
-			     "ERROR: can't allocate memory for values_copy\n");
+	if (dev->dev_ops->xstats_get_names_by_id != NULL)
+		return (*dev->dev_ops->xstats_get_names_by_id)(
+				dev, xstats_names, ids, size);
+
+	/* Retrieve all stats */
+	if (!ids) {
+		int num_stats = rte_eth_xstats_get_names(port_id, xstats_names,
+				expected_entries);
+		if (num_stats < 0 || num_stats > (int)expected_entries)
+			return num_stats;
+		else
+			return expected_entries;
+	}
+
+	xstats_names_copy = calloc(expected_entries,
+		sizeof(struct rte_eth_xstat_name));
+
+	if (!xstats_names_copy) {
+		RTE_PMD_DEBUG_TRACE("ERROR: can't allocate memory");
+		return -ENOMEM;
+	}
+
+	/* Fill xstats_names_copy structure */
+	rte_eth_xstats_get_names(port_id, xstats_names_copy, expected_entries);
+
+	/* Filter stats */
+	for (i = 0; i < size; i++) {
+		if (ids[i] >= expected_entries) {
+			RTE_PMD_DEBUG_TRACE("ERROR: id value isn't valid\n");
 			free(xstats_names_copy);
 			return -1;
 		}
-
-		rte_eth_xstats_get_names_by_id(port_id, xstats_names_copy,
-				len, NULL);
-
-		for (i = 0; i < size; i++) {
-			if (ids[i] >= len) {
-				RTE_PMD_DEBUG_TRACE(
-					"ERROR: id value isn't valid\n");
-				return -1;
-			}
-			strcpy(xstats_names[i].name,
-					xstats_names_copy[ids[i]].name);
-		}
-		free(xstats_names_copy);
-		return size;
+		xstats_names[i] = xstats_names_copy[ids[i]];
 	}
+
+	free(xstats_names_copy);
+	return size;
 }
 
 int
@@ -1806,128 +1756,53 @@ rte_eth_xstats_get_names(uint16_t port_id,
 /* retrieve ethdev extended statistics */
 int
 rte_eth_xstats_get_by_id(uint16_t port_id, const uint64_t *ids,
-			 uint64_t *values, unsigned int n)
+			 uint64_t *values, unsigned int size)
 {
-	/* If need all xstats */
+	unsigned int num_xstats_filled;
+	uint16_t expected_entries;
+	struct rte_eth_dev *dev;
+	unsigned int i;
+
+	RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -ENODEV);
+	expected_entries = get_xstats_count(port_id);
+	struct rte_eth_xstat xstats[expected_entries];
+	dev = &rte_eth_devices[port_id];
+
+	/* Return max number of stats if no ids given */
 	if (!ids) {
-		struct rte_eth_stats eth_stats;
-		struct rte_eth_dev *dev;
-		unsigned int count = 0, i, q;
-		signed int xcount = 0;
-		uint64_t val, *stats_ptr;
-		uint16_t nb_rxqs, nb_txqs;
-
-		RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -ENODEV);
-		dev = &rte_eth_devices[port_id];
-
-		nb_rxqs = RTE_MIN(dev->data->nb_rx_queues,
-				RTE_ETHDEV_QUEUE_STAT_CNTRS);
-		nb_txqs = RTE_MIN(dev->data->nb_tx_queues,
-				RTE_ETHDEV_QUEUE_STAT_CNTRS);
-
-		/* Return generic statistics */
-		count = RTE_NB_STATS + (nb_rxqs * RTE_NB_RXQ_STATS) +
-			(nb_txqs * RTE_NB_TXQ_STATS);
-
-
-		/* implemented by the driver */
-		if (dev->dev_ops->xstats_get_by_id != NULL) {
-			/* Retrieve the xstats from the driver at the end of the
-			 * xstats struct. Retrieve all xstats.
-			 */
-			xcount = (*dev->dev_ops->xstats_get_by_id)(dev,
-					NULL,
-					values ? values + count : NULL,
-					(n > count) ? n - count : 0);
-
-			if (xcount < 0)
-				return xcount;
-		/* implemented by the driver */
-		} else if (dev->dev_ops->xstats_get != NULL) {
-			/* Retrieve the xstats from the driver at the end of the
-			 * xstats struct. Retrieve all xstats.
-			 * Compatibility for PMD without xstats_get_by_ids
-			 */
-			unsigned int size = (n > count) ? n - count : 1;
-			struct rte_eth_xstat xstats[size];
-
-			xcount = (*dev->dev_ops->xstats_get)(dev,
-					values ? xstats : NULL,	size);
-
-			if (xcount < 0)
-				return xcount;
-
-			if (values != NULL)
-				for (i = 0 ; i < (unsigned int)xcount; i++)
-					values[i + count] = xstats[i].value;
-		}
-
-		if (n < count + xcount || values == NULL)
-			return count + xcount;
-
-		/* now fill the xstats structure */
-		count = 0;
-		rte_eth_stats_get(port_id, &eth_stats);
-
-		/* global stats */
-		for (i = 0; i < RTE_NB_STATS; i++) {
-			stats_ptr = RTE_PTR_ADD(&eth_stats,
-						rte_stats_strings[i].offset);
-			val = *stats_ptr;
-			values[count++] = val;
-		}
-
-		/* per-rxq stats */
-		for (q = 0; q < nb_rxqs; q++) {
-			for (i = 0; i < RTE_NB_RXQ_STATS; i++) {
-				stats_ptr = RTE_PTR_ADD(&eth_stats,
-					    rte_rxq_stats_strings[i].offset +
-					    q * sizeof(uint64_t));
-				val = *stats_ptr;
-				values[count++] = val;
-			}
-		}
-
-		/* per-txq stats */
-		for (q = 0; q < nb_txqs; q++) {
-			for (i = 0; i < RTE_NB_TXQ_STATS; i++) {
-				stats_ptr = RTE_PTR_ADD(&eth_stats,
-					    rte_txq_stats_strings[i].offset +
-					    q * sizeof(uint64_t));
-				val = *stats_ptr;
-				values[count++] = val;
-			}
-		}
-
-		return count + xcount;
+		if (!values)
+			return expected_entries;
+		else if (values && size < expected_entries)
+			return expected_entries;
 	}
-	/* Need only xstats given by IDS array */
-	else {
-		uint16_t i, size;
-		uint64_t *values_copy;
 
-		size = rte_eth_xstats_get_by_id(port_id, NULL, NULL, 0);
+	if (ids && !values)
+		return -EINVAL;
 
-		values_copy = malloc(sizeof(*values_copy) * size);
-		if (!values_copy) {
-			RTE_PMD_DEBUG_TRACE(
-			    "ERROR: can't allocate memory for values_copy\n");
+	if (dev->dev_ops->xstats_get_by_id != NULL)
+		return (*dev->dev_ops->xstats_get_by_id)(dev, ids, values,
+			size);
+
+	/* Fill the xstats structure */
+	num_xstats_filled = rte_eth_xstats_get(port_id, xstats,
+		expected_entries);
+
+	/* Return all stats */
+	if (!ids) {
+		for (i = 0; i < num_xstats_filled; i++)
+			values[i] = xstats[i].value;
+		return expected_entries;
+	}
+
+	/* Filter stats */
+	for (i = 0; i < size; i++) {
+		if (ids[i] >= expected_entries) {
+			RTE_PMD_DEBUG_TRACE("ERROR: id value isn't valid\n");
 			return -1;
 		}
-
-		rte_eth_xstats_get_by_id(port_id, NULL, values_copy, size);
-
-		for (i = 0; i < n; i++) {
-			if (ids[i] >= size) {
-				RTE_PMD_DEBUG_TRACE(
-					"ERROR: id value isn't valid\n");
-				return -1;
-			}
-			values[i] = values_copy[ids[i]];
-		}
-		free(values_copy);
-		return n;
+		values[i] = xstats[ids[i]].value;
 	}
+	return size;
 }
 
 int
@@ -3036,12 +2911,7 @@ rte_eth_dma_zone_reserve(const struct rte_eth_dev *dev, const char *ring_name,
 	if (mz)
 		return mz;
 
-	if (rte_xen_dom0_supported())
-		return rte_memzone_reserve_bounded(z_name, size, socket_id,
-						   0, align, RTE_PGSIZE_2M);
-	else
-		return rte_memzone_reserve_aligned(z_name, size, socket_id,
-						   0, align);
+	return rte_memzone_reserve_aligned(z_name, size, socket_id, 0, align);
 }
 
 int
@@ -3631,7 +3501,7 @@ rte_eth_dev_adjust_nb_rx_tx_desc(uint16_t port_id,
 }
 
 int
-rte_eth_dev_pool_ops_supported(uint8_t port_id, const char *pool)
+rte_eth_dev_pool_ops_supported(uint16_t port_id, const char *pool)
 {
 	struct rte_eth_dev *dev;
 

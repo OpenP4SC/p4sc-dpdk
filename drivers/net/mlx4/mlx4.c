@@ -50,6 +50,7 @@
 #pragma GCC diagnostic ignored "-Wpedantic"
 #endif
 #include <infiniband/verbs.h>
+#include <infiniband/mlx4dv.h>
 #ifdef PEDANTIC
 #pragma GCC diagnostic error "-Wpedantic"
 #endif
@@ -60,6 +61,7 @@
 #include <rte_ethdev.h>
 #include <rte_ethdev_pci.h>
 #include <rte_ether.h>
+#include <rte_flow.h>
 #include <rte_interrupts.h>
 #include <rte_kvargs.h>
 #include <rte_malloc.h>
@@ -96,8 +98,31 @@ const char *pmd_mlx4_init_params[] = {
 static int
 mlx4_dev_configure(struct rte_eth_dev *dev)
 {
-	(void)dev;
-	return 0;
+	struct priv *priv = dev->data->dev_private;
+	struct rte_flow_error error;
+	uint8_t log2_range = rte_log2_u32(dev->data->nb_rx_queues);
+	int ret;
+
+	/* Prepare range for RSS contexts before creating the first WQ. */
+	ret = mlx4dv_set_context_attr(priv->ctx,
+				      MLX4DV_SET_CTX_ATTR_LOG_WQS_RANGE_SZ,
+				      &log2_range);
+	if (ret) {
+		ERROR("cannot set up range size for RSS context to %u"
+		      " (for %u Rx queues), error: %s",
+		      1 << log2_range, dev->data->nb_rx_queues, strerror(ret));
+		rte_errno = ret;
+		return -ret;
+	}
+	/* Prepare internal flow rules. */
+	ret = mlx4_flow_sync(priv, &error);
+	if (ret) {
+		ERROR("cannot set up internal flow rules (code %d, \"%s\"),"
+		      " flow error type %d, cause %p, message: %s",
+		      -ret, strerror(-ret), error.type, error.cause,
+		      error.message ? error.message : "(unspecified)");
+	}
+	return ret;
 }
 
 /**
@@ -115,31 +140,34 @@ static int
 mlx4_dev_start(struct rte_eth_dev *dev)
 {
 	struct priv *priv = dev->data->dev_private;
+	struct rte_flow_error error;
 	int ret;
 
 	if (priv->started)
 		return 0;
 	DEBUG("%p: attaching configured flows to all RX queues", (void *)dev);
 	priv->started = 1;
-	ret = mlx4_mac_addr_add(priv);
-	if (ret)
-		goto err;
 	ret = mlx4_intr_install(priv);
 	if (ret) {
 		ERROR("%p: interrupt handler installation failed",
 		     (void *)dev);
 		goto err;
 	}
-	ret = mlx4_flow_start(priv);
+	ret = mlx4_flow_sync(priv, &error);
 	if (ret) {
-		ERROR("%p: flow start failed: %s",
-		      (void *)dev, strerror(ret));
+		ERROR("%p: cannot attach flow rules (code %d, \"%s\"),"
+		      " flow error type %d, cause %p, message: %s",
+		      (void *)dev,
+		      -ret, strerror(-ret), error.type, error.cause,
+		      error.message ? error.message : "(unspecified)");
 		goto err;
 	}
+	rte_wmb();
+	dev->tx_pkt_burst = mlx4_tx_burst;
+	dev->rx_pkt_burst = mlx4_rx_burst;
 	return 0;
 err:
 	/* Rollback. */
-	mlx4_mac_addr_del(priv);
 	priv->started = 0;
 	return ret;
 }
@@ -161,9 +189,11 @@ mlx4_dev_stop(struct rte_eth_dev *dev)
 		return;
 	DEBUG("%p: detaching flows from all RX queues", (void *)dev);
 	priv->started = 0;
-	mlx4_flow_stop(priv);
+	dev->tx_pkt_burst = mlx4_tx_burst_removed;
+	dev->rx_pkt_burst = mlx4_rx_burst_removed;
+	rte_wmb();
+	mlx4_flow_sync(priv, NULL);
 	mlx4_intr_uninstall(priv);
-	mlx4_mac_addr_del(priv);
 }
 
 /**
@@ -180,14 +210,13 @@ mlx4_dev_close(struct rte_eth_dev *dev)
 	struct priv *priv = dev->data->dev_private;
 	unsigned int i;
 
-	if (priv == NULL)
-		return;
 	DEBUG("%p: closing device \"%s\"",
 	      (void *)dev,
 	      ((priv->ctx != NULL) ? priv->ctx->device->name : ""));
-	mlx4_mac_addr_del(priv);
 	dev->rx_pkt_burst = mlx4_rx_burst_removed;
 	dev->tx_pkt_burst = mlx4_tx_burst_removed;
+	rte_wmb();
+	mlx4_flow_clean(priv);
 	for (i = 0; i != dev->data->nb_rx_queues; ++i)
 		mlx4_rx_queue_release(dev->data->rx_queues[i]);
 	for (i = 0; i != dev->data->nb_tx_queues; ++i)
@@ -210,9 +239,17 @@ static const struct eth_dev_ops mlx4_dev_ops = {
 	.dev_set_link_up = mlx4_dev_set_link_up,
 	.dev_close = mlx4_dev_close,
 	.link_update = mlx4_link_update,
+	.promiscuous_enable = mlx4_promiscuous_enable,
+	.promiscuous_disable = mlx4_promiscuous_disable,
+	.allmulticast_enable = mlx4_allmulticast_enable,
+	.allmulticast_disable = mlx4_allmulticast_disable,
+	.mac_addr_remove = mlx4_mac_addr_remove,
+	.mac_addr_add = mlx4_mac_addr_add,
+	.mac_addr_set = mlx4_mac_addr_set,
 	.stats_get = mlx4_stats_get,
 	.stats_reset = mlx4_stats_reset,
 	.dev_infos_get = mlx4_dev_infos_get,
+	.vlan_filter_set = mlx4_vlan_filter_set,
 	.rx_queue_setup = mlx4_rx_queue_setup,
 	.tx_queue_setup = mlx4_tx_queue_setup,
 	.rx_queue_release = mlx4_rx_queue_release,
@@ -529,6 +566,17 @@ mlx4_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 		priv->pd = pd;
 		priv->mtu = ETHER_MTU;
 		priv->vf = vf;
+		priv->hw_csum =	!!(device_attr.device_cap_flags &
+				   IBV_DEVICE_RAW_IP_CSUM);
+		DEBUG("checksum offloading is %ssupported",
+		      (priv->hw_csum ? "" : "not "));
+		/* Only ConnectX-3 Pro supports tunneling. */
+		priv->hw_csum_l2tun =
+			priv->hw_csum &&
+			(device_attr.vendor_part_id ==
+			 PCI_DEVICE_ID_MELLANOX_CONNECTX3PRO);
+		DEBUG("L2 tunnel checksum offloads are %ssupported",
+		      (priv->hw_csum_l2tun ? "" : "not "));
 		/* Configure the first MAC address by default. */
 		if (mlx4_get_mac(priv, &mac.addr_bytes)) {
 			ERROR("cannot get MAC address, is mlx4_en loaded?"
@@ -541,9 +589,7 @@ mlx4_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 		     mac.addr_bytes[2], mac.addr_bytes[3],
 		     mac.addr_bytes[4], mac.addr_bytes[5]);
 		/* Register MAC address. */
-		priv->mac = mac;
-		if (mlx4_mac_addr_add(priv))
-			goto port_error;
+		priv->mac[0] = mac;
 #ifndef NDEBUG
 		{
 			char ifname[IF_NAMESIZE];
@@ -572,7 +618,7 @@ mlx4_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 			goto port_error;
 		}
 		eth_dev->data->dev_private = priv;
-		eth_dev->data->mac_addrs = &priv->mac;
+		eth_dev->data->mac_addrs = priv->mac;
 		eth_dev->device = &pci_dev->device;
 		rte_eth_copy_pci_info(eth_dev, pci_dev);
 		eth_dev->device->driver = &mlx4_driver.driver;

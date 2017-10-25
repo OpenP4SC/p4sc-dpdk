@@ -138,10 +138,6 @@
 #define I40E_PRTTSYN_TSYNTYPE    0x0e000000
 #define I40E_CYCLECOUNTER_MASK   0xffffffffffffffffULL
 
-#define I40E_MAX_PERCENT            100
-#define I40E_DEFAULT_DCB_APP_NUM    1
-#define I40E_DEFAULT_DCB_APP_PRIO   3
-
 /**
  * Below are values for writing un-exposed registers suggested
  * by silicon experts
@@ -258,7 +254,7 @@ static void i40e_dev_allmulticast_enable(struct rte_eth_dev *dev);
 static void i40e_dev_allmulticast_disable(struct rte_eth_dev *dev);
 static int i40e_dev_set_link_up(struct rte_eth_dev *dev);
 static int i40e_dev_set_link_down(struct rte_eth_dev *dev);
-static void i40e_dev_stats_get(struct rte_eth_dev *dev,
+static int i40e_dev_stats_get(struct rte_eth_dev *dev,
 			       struct rte_eth_stats *stats);
 static int i40e_dev_xstats_get(struct rte_eth_dev *dev,
 			       struct rte_eth_xstat *xstats, unsigned n);
@@ -310,7 +306,6 @@ static int i40e_pf_parameter_init(struct rte_eth_dev *dev);
 static int i40e_pf_setup(struct i40e_pf *pf);
 static int i40e_dev_rxtx_init(struct i40e_pf *pf);
 static int i40e_vmdq_setup(struct rte_eth_dev *dev);
-static int i40e_dcb_init_configure(struct rte_eth_dev *dev, bool sw_dcb);
 static int i40e_dcb_setup(struct rte_eth_dev *dev);
 static void i40e_stat_update_32(struct i40e_hw *hw, uint32_t reg,
 		bool offset_loaded, uint64_t *offset, uint64_t *stat);
@@ -654,7 +649,8 @@ static int eth_i40e_pci_remove(struct rte_pci_device *pci_dev)
 
 static struct rte_pci_driver rte_i40e_pmd = {
 	.id_table = pci_id_i40e_map,
-	.drv_flags = RTE_PCI_DRV_NEED_MAPPING | RTE_PCI_DRV_INTR_LSC,
+	.drv_flags = RTE_PCI_DRV_NEED_MAPPING | RTE_PCI_DRV_INTR_LSC |
+		     RTE_PCI_DRV_IOVA_AS_VA,
 	.probe = eth_i40e_pci_probe,
 	.remove = eth_i40e_pci_remove,
 };
@@ -704,23 +700,22 @@ RTE_PMD_REGISTER_KMOD_DEP(net_i40e, "* igb_uio | uio_pci_generic | vfio-pci");
 static inline void i40e_GLQF_reg_init(struct i40e_hw *hw)
 {
 	/*
-	 * Initialize registers for flexible payload, which should be set by NVM.
-	 * This should be removed from code once it is fixed in NVM.
+	 * Force global configuration for flexible payload
+	 * to the first 16 bytes of the corresponding L2/L3/L4 paylod.
+	 * This should be removed from code once proper
+	 * configuration API is added to avoid configuration conflicts
+	 * between ports of the same device.
 	 */
-	I40E_WRITE_REG(hw, I40E_GLQF_ORT(18), 0x00000030);
-	I40E_WRITE_REG(hw, I40E_GLQF_ORT(19), 0x00000030);
-	I40E_WRITE_REG(hw, I40E_GLQF_ORT(26), 0x0000002B);
-	I40E_WRITE_REG(hw, I40E_GLQF_ORT(30), 0x0000002B);
 	I40E_WRITE_REG(hw, I40E_GLQF_ORT(33), 0x000000E0);
 	I40E_WRITE_REG(hw, I40E_GLQF_ORT(34), 0x000000E3);
 	I40E_WRITE_REG(hw, I40E_GLQF_ORT(35), 0x000000E6);
-	I40E_WRITE_REG(hw, I40E_GLQF_ORT(20), 0x00000031);
-	I40E_WRITE_REG(hw, I40E_GLQF_ORT(23), 0x00000031);
-	I40E_WRITE_REG(hw, I40E_GLQF_ORT(63), 0x0000002D);
-	I40E_WRITE_REG(hw, I40E_GLQF_PIT(16), 0x00007480);
-	I40E_WRITE_REG(hw, I40E_GLQF_PIT(17), 0x00007440);
 
-	/* Initialize registers for parsing packet type of QinQ */
+	/*
+	 * Initialize registers for parsing packet type of QinQ
+	 * This should be removed from code once proper
+	 * configuration API is added to avoid configuration conflicts
+	 * between ports of the same device.
+	 */
 	I40E_WRITE_REG(hw, I40E_GLQF_ORT(40), 0x00000029);
 	I40E_WRITE_REG(hw, I40E_GLQF_PIT(9), 0x00009420);
 }
@@ -1058,6 +1053,20 @@ i40e_init_customized_info(struct i40e_pf *pf)
 	pf->gtp_support = false;
 }
 
+void
+i40e_init_queue_region_conf(struct rte_eth_dev *dev)
+{
+	struct i40e_hw *hw = I40E_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	struct i40e_pf *pf = I40E_DEV_PRIVATE_TO_PF(dev->data->dev_private);
+	struct i40e_queue_regions *info = &pf->queue_region;
+	uint16_t i;
+
+	for (i = 0; i < I40E_PFQF_HREGION_MAX_INDEX; i++)
+		i40e_write_rx_ctl(hw, I40E_PFQF_HREGION(i), 0);
+
+	memset(info, 0, sizeof(struct i40e_queue_regions));
+}
+
 static int
 eth_i40e_dev_init(struct rte_eth_dev *dev)
 {
@@ -1336,6 +1345,9 @@ eth_i40e_dev_init(struct rte_eth_dev *dev)
 	ret = i40e_init_fdir_filter_list(dev);
 	if (ret < 0)
 		goto err_init_fdir_filter_list;
+
+	/* initialize queue region configuration */
+	i40e_init_queue_region_conf(dev);
 
 	return 0;
 
@@ -2142,6 +2154,9 @@ i40e_dev_stop(struct rte_eth_dev *dev)
 	/* reset hierarchy commit */
 	pf->tm_conf.committed = false;
 
+	/* Remove all the queue region configuration */
+	i40e_flush_queue_region_all_conf(dev, hw, pf, 0);
+
 	hw->adapter_stopped = 1;
 }
 
@@ -2728,7 +2743,7 @@ i40e_read_stats_registers(struct i40e_pf *pf, struct i40e_hw *hw)
 }
 
 /* Get all statistics of a port */
-static void
+static int
 i40e_dev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 {
 	struct i40e_pf *pf = I40E_DEV_PRIVATE_TO_PF(dev->data->dev_private);
@@ -2828,6 +2843,7 @@ i40e_dev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 		    ns->checksum_error);
 	PMD_DRV_LOG(DEBUG, "fdir_match:               %"PRIu64"", ns->fd_sb_match);
 	PMD_DRV_LOG(DEBUG, "***************** PF stats end ********************");
+	return 0;
 }
 
 /* Reset the statistics */
@@ -3824,7 +3840,7 @@ i40e_allocate_dma_mem_d(__attribute__((unused)) struct i40e_hw *hw,
 
 	mem->size = size;
 	mem->va = mz->addr;
-	mem->pa = rte_mem_phy2mch(mz->memseg_id, mz->phys_addr);
+	mem->pa = mz->phys_addr;
 	mem->zone = (const void *)mz;
 	PMD_DRV_LOG(DEBUG,
 		"memzone %s allocated with physical address: %"PRIu64,
@@ -10470,7 +10486,7 @@ i40e_dcb_hw_configure(struct i40e_pf *pf,
  *
  * Returns 0 on success, negative value on failure
  */
-static int
+int
 i40e_dcb_init_configure(struct rte_eth_dev *dev, bool sw_dcb)
 {
 	struct i40e_pf *pf = I40E_DEV_PRIVATE_TO_PF(dev->data->dev_private);
@@ -11049,7 +11065,7 @@ i40e_update_customized_ptype(struct rte_eth_dev *dev, uint8_t *pkg,
 			       struct rte_pmd_i40e_proto_info *proto)
 {
 	struct rte_pmd_i40e_ptype_mapping *ptype_mapping;
-	uint8_t port_id = dev->data->port_id;
+	uint16_t port_id = dev->data->port_id;
 	uint32_t ptype_num;
 	struct rte_pmd_i40e_ptype_info *ptype;
 	uint32_t buff_size;

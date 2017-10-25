@@ -76,6 +76,10 @@ parse_cperf_test_type(struct cperf_options *opts, const char *arg)
 		{
 			cperf_test_type_strs[CPERF_TEST_TYPE_LATENCY],
 			CPERF_TEST_TYPE_LATENCY
+		},
+		{
+			cperf_test_type_strs[CPERF_TEST_TYPE_PMDCC],
+			CPERF_TEST_TYPE_PMDCC
 		}
 	};
 
@@ -137,6 +141,7 @@ parse_range(const char *arg, uint32_t *min, uint32_t *max, uint32_t *inc)
 	if (copy_arg == NULL)
 		return -1;
 
+	errno = 0;
 	token = strtok(copy_arg, ":");
 
 	/* Parse minimum value */
@@ -203,6 +208,7 @@ parse_list(const char *arg, uint32_t *list, uint32_t *min, uint32_t *max)
 	if (copy_arg == NULL)
 		return -1;
 
+	errno = 0;
 	token = strtok(copy_arg, ",");
 
 	/* Parse first value */
@@ -322,17 +328,35 @@ parse_buffer_sz(struct cperf_options *opts, const char *arg)
 }
 
 static int
-parse_segments_nb(struct cperf_options *opts, const char *arg)
+parse_segment_sz(struct cperf_options *opts, const char *arg)
 {
-	int ret = parse_uint32_t(&opts->segments_nb, arg);
+	int ret = parse_uint32_t(&opts->segment_sz, arg);
 
 	if (ret) {
-		RTE_LOG(ERR, USER1, "failed to parse segments number\n");
+		RTE_LOG(ERR, USER1, "failed to parse segment size\n");
 		return -1;
 	}
 
-	if ((opts->segments_nb == 0) || (opts->segments_nb > 255)) {
-		RTE_LOG(ERR, USER1, "invalid segments number specified\n");
+	if (opts->segment_sz == 0) {
+		RTE_LOG(ERR, USER1, "Segment size has to be bigger than 0\n");
+		return -1;
+	}
+
+	return 0;
+}
+
+static int
+parse_desc_nb(struct cperf_options *opts, const char *arg)
+{
+	int ret = parse_uint32_t(&opts->nb_descriptors, arg);
+
+	if (ret) {
+		RTE_LOG(ERR, USER1, "failed to parse descriptors number\n");
+		return -1;
+	}
+
+	if (opts->nb_descriptors == 0) {
+		RTE_LOG(ERR, USER1, "invalid descriptors number specified\n");
 		return -1;
 	}
 
@@ -623,6 +647,20 @@ parse_csv_friendly(struct cperf_options *opts, const char *arg __rte_unused)
 	return 0;
 }
 
+static int
+parse_pmd_cyclecount_delay_ms(struct cperf_options *opts,
+			const char *arg)
+{
+	int ret = parse_uint32_t(&opts->pmdcc_delay, arg);
+
+	if (ret) {
+		RTE_LOG(ERR, USER1, "failed to parse pmd-cyclecount delay\n");
+		return -1;
+	}
+
+	return 0;
+}
+
 typedef int (*option_parser_t)(struct cperf_options *opts,
 		const char *arg);
 
@@ -640,7 +678,8 @@ static struct option lgopts[] = {
 	{ CPERF_TOTAL_OPS, required_argument, 0, 0 },
 	{ CPERF_BURST_SIZE, required_argument, 0, 0 },
 	{ CPERF_BUFFER_SIZE, required_argument, 0, 0 },
-	{ CPERF_SEGMENTS_NB, required_argument, 0, 0 },
+	{ CPERF_SEGMENT_SIZE, required_argument, 0, 0 },
+	{ CPERF_DESC_NB, required_argument, 0, 0 },
 
 	{ CPERF_DEVTYPE, required_argument, 0, 0 },
 	{ CPERF_OPTYPE, required_argument, 0, 0 },
@@ -674,6 +713,8 @@ static struct option lgopts[] = {
 
 	{ CPERF_CSV, no_argument, 0, 0},
 
+	{ CPERF_PMDCC_DELAY_MS, required_argument, 0, 0 },
+
 	{ NULL, 0, 0, 0 }
 };
 
@@ -684,6 +725,7 @@ cperf_options_default(struct cperf_options *opts)
 
 	opts->pool_sz = 8192;
 	opts->total_ops = 10000000;
+	opts->nb_descriptors = 2048;
 
 	opts->buffer_size_list[0] = 64;
 	opts->buffer_size_count = 1;
@@ -697,10 +739,15 @@ cperf_options_default(struct cperf_options *opts)
 	opts->min_burst_size = 32;
 	opts->inc_burst_size = 0;
 
-	opts->segments_nb = 1;
+	/*
+	 * Will be parsed from command line or set to
+	 * maximum buffer size + digest, later
+	 */
+	opts->segment_sz = 0;
 
 	strncpy(opts->device_type, "crypto_aesni_mb",
 			sizeof(opts->device_type));
+	opts->nb_qps = 1;
 
 	opts->op_type = CPERF_CIPHER_THEN_AUTH;
 
@@ -727,6 +774,8 @@ cperf_options_default(struct cperf_options *opts)
 	opts->aead_aad_sz = 0;
 
 	opts->digest_sz = 12;
+
+	opts->pmdcc_delay = 0;
 }
 
 static int
@@ -739,7 +788,8 @@ cperf_opts_parse_long(int opt_idx, struct cperf_options *opts)
 		{ CPERF_TOTAL_OPS,	parse_total_ops },
 		{ CPERF_BURST_SIZE,	parse_burst_sz },
 		{ CPERF_BUFFER_SIZE,	parse_buffer_sz },
-		{ CPERF_SEGMENTS_NB,	parse_segments_nb },
+		{ CPERF_SEGMENT_SIZE,	parse_segment_sz },
+		{ CPERF_DESC_NB,	parse_desc_nb },
 		{ CPERF_DEVTYPE,	parse_device_type },
 		{ CPERF_OPTYPE,		parse_op_type },
 		{ CPERF_SESSIONLESS,	parse_sessionless },
@@ -761,6 +811,7 @@ cperf_opts_parse_long(int opt_idx, struct cperf_options *opts)
 		{ CPERF_AEAD_AAD_SZ,	parse_aead_aad_sz },
 		{ CPERF_DIGEST_SZ,	parse_digest_sz },
 		{ CPERF_CSV,		parse_csv_friendly},
+		{ CPERF_PMDCC_DELAY_MS,	parse_pmd_cyclecount_delay_ms},
 	};
 	unsigned int i;
 
@@ -830,14 +881,26 @@ check_cipher_buffer_length(struct cperf_options *options)
 	if (options->cipher_algo == RTE_CRYPTO_CIPHER_DES_CBC ||
 			options->cipher_algo == RTE_CRYPTO_CIPHER_3DES_CBC ||
 			options->cipher_algo == RTE_CRYPTO_CIPHER_3DES_ECB) {
-		for (buffer_size = options->min_buffer_size;
-				buffer_size < options->max_buffer_size;
-				buffer_size += options->inc_buffer_size) {
+		if (options->inc_buffer_size != 0)
+			buffer_size = options->min_buffer_size;
+		else
+			buffer_size = options->buffer_size_list[0];
+
+		while (buffer_size <= options->max_buffer_size) {
 			if ((buffer_size % DES_BLOCK_SIZE) != 0) {
 				RTE_LOG(ERR, USER1, "Some of the buffer sizes are "
 					"not suitable for the algorithm selected\n");
 				return -EINVAL;
 			}
+
+			if (options->inc_buffer_size != 0)
+				buffer_size += options->inc_buffer_size;
+			else {
+				if (++buffer_size_idx == options->buffer_size_count)
+					break;
+				buffer_size = options->buffer_size_list[buffer_size_idx];
+			}
+
 		}
 	}
 
@@ -847,9 +910,21 @@ check_cipher_buffer_length(struct cperf_options *options)
 int
 cperf_options_check(struct cperf_options *options)
 {
-	if (options->segments_nb > options->min_buffer_size) {
+	if (options->op_type == CPERF_CIPHER_ONLY)
+		options->digest_sz = 0;
+
+	/*
+	 * If segment size is not set, assume only one segment,
+	 * big enough to contain the largest buffer and the digest
+	 */
+	if (options->segment_sz == 0)
+		options->segment_sz = options->max_buffer_size +
+				options->digest_sz;
+
+	if (options->segment_sz < options->digest_sz) {
 		RTE_LOG(ERR, USER1,
-				"Segments number greater than buffer size.\n");
+				"Segment size should be at least "
+				"the size of the digest\n");
 		return -EINVAL;
 	}
 
@@ -882,13 +957,6 @@ cperf_options_check(struct cperf_options *options)
 	}
 
 	if (options->test == CPERF_TEST_TYPE_VERIFY &&
-			options->total_ops > options->pool_sz) {
-		RTE_LOG(ERR, USER1, "Total number of ops must be less than or"
-				" equal to the pool size.\n");
-		return -EINVAL;
-	}
-
-	if (options->test == CPERF_TEST_TYPE_VERIFY &&
 			(options->inc_buffer_size != 0 ||
 			options->buffer_size_count > 1)) {
 		RTE_LOG(ERR, USER1, "Only one buffer size is allowed when "
@@ -901,6 +969,14 @@ cperf_options_check(struct cperf_options *options)
 			options->burst_size_count > 1)) {
 		RTE_LOG(ERR, USER1, "Only one burst size is allowed when "
 				"using the verify test.\n");
+		return -EINVAL;
+	}
+
+	if (options->test == CPERF_TEST_TYPE_PMDCC &&
+			options->pool_sz < options->nb_descriptors) {
+		RTE_LOG(ERR, USER1, "For pmd cyclecount benchmarks, pool size "
+				"must be equal or greater than the number of "
+				"cryptodev descriptors.\n");
 		return -EINVAL;
 	}
 
@@ -965,13 +1041,16 @@ cperf_options_dump(struct cperf_options *opts)
 			printf("%u ", opts->burst_size_list[size_idx]);
 		printf("\n");
 	}
-	printf("\n# segments per buffer: %u\n", opts->segments_nb);
+	printf("\n# segment size: %u\n", opts->segment_sz);
 	printf("#\n");
 	printf("# cryptodev type: %s\n", opts->device_type);
 	printf("#\n");
+	printf("# number of queue pairs per device: %u\n", opts->nb_qps);
 	printf("# crypto operation: %s\n", cperf_op_type_strs[opts->op_type]);
 	printf("# sessionless: %s\n", opts->sessionless ? "yes" : "no");
 	printf("# out of place: %s\n", opts->out_of_place ? "yes" : "no");
+	if (opts->test == CPERF_TEST_TYPE_PMDCC)
+		printf("# inter-burst delay: %u ms\n", opts->pmdcc_delay);
 
 	printf("#\n");
 

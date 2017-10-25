@@ -1989,7 +1989,7 @@ ecore_hw_init_pf_doorbell_bar(struct ecore_hwfn *p_hwfn,
 		/* Either EDPM is mandatory, or we are attempting to allocate a
 		 * WID per CPU.
 		 */
-		n_cpus = OSAL_NUM_ACTIVE_CPU();
+		n_cpus = OSAL_NUM_CPUS();
 		rc = ecore_hw_init_dpi_size(p_hwfn, p_ptt, pwm_regsize, n_cpus);
 	}
 
@@ -2283,19 +2283,6 @@ static void ecore_reset_mb_shadow(struct ecore_hwfn *p_hwfn,
 		    p_hwfn->mcp_info->mfw_mb_length);
 }
 
-enum _ecore_status_t ecore_vf_start(struct ecore_hwfn *p_hwfn,
-				    struct ecore_hw_init_params *p_params)
-{
-	if (p_params->p_tunn) {
-		ecore_vf_set_vf_start_tunn_update_param(p_params->p_tunn);
-		ecore_vf_pf_tunnel_param_update(p_hwfn, p_params->p_tunn);
-	}
-
-	p_hwfn->b_int_enabled = 1;
-
-	return ECORE_SUCCESS;
-}
-
 static void ecore_pglueb_clear_err(struct ecore_hwfn *p_hwfn,
 				     struct ecore_ptt *p_ptt)
 {
@@ -2325,6 +2312,19 @@ ecore_fill_load_req_params(struct ecore_load_req_params *p_load_req,
 		p_load_req->override_force_load =
 			p_drv_load->override_force_load;
 	}
+}
+
+enum _ecore_status_t ecore_vf_start(struct ecore_hwfn *p_hwfn,
+				    struct ecore_hw_init_params *p_params)
+{
+	if (p_params->p_tunn) {
+		ecore_vf_set_vf_start_tunn_update_param(p_params->p_tunn);
+		ecore_vf_pf_tunnel_param_update(p_hwfn, p_params->p_tunn);
+	}
+
+	p_hwfn->b_int_enabled = 1;
+
+	return ECORE_SUCCESS;
 }
 
 enum _ecore_status_t ecore_hw_init(struct ecore_dev *p_dev,
@@ -2869,12 +2869,15 @@ static void ecore_hw_set_feat(struct ecore_hwfn *p_hwfn)
 				   FEAT_NUM(p_hwfn, ECORE_VF_L2_QUE));
 	}
 
-	feat_num[ECORE_FCOE_CQ] = OSAL_MIN_T(u32, sb_cnt.cnt,
-					     RESC_NUM(p_hwfn,
-						      ECORE_CMDQS_CQS));
-	feat_num[ECORE_ISCSI_CQ] = OSAL_MIN_T(u32, sb_cnt.cnt,
-					      RESC_NUM(p_hwfn,
-						       ECORE_CMDQS_CQS));
+	if (ECORE_IS_FCOE_PERSONALITY(p_hwfn))
+		feat_num[ECORE_FCOE_CQ] =
+			OSAL_MIN_T(u32, sb_cnt.cnt, RESC_NUM(p_hwfn,
+							     ECORE_CMDQS_CQS));
+
+	if (ECORE_IS_ISCSI_PERSONALITY(p_hwfn))
+		feat_num[ECORE_ISCSI_CQ] =
+			OSAL_MIN_T(u32, sb_cnt.cnt, RESC_NUM(p_hwfn,
+							     ECORE_CMDQS_CQS));
 
 	DP_VERBOSE(p_hwfn, ECORE_MSG_PROBE,
 		   "#PF_L2_QUEUE=%d VF_L2_QUEUES=%d #ROCE_CNQ=%d #FCOE_CQ=%d #ISCSI_CQ=%d #SB=%d\n",
@@ -4414,11 +4417,11 @@ ecore_chain_alloc_pbl(struct ecore_dev *p_dev,
 		      struct ecore_chain *p_chain,
 		      struct ecore_chain_ext_pbl *ext_pbl)
 {
-	void *p_virt = OSAL_NULL;
-	u8 *p_pbl_virt = OSAL_NULL;
-	void **pp_virt_addr_tbl = OSAL_NULL;
-	dma_addr_t p_phys = 0, p_pbl_phys = 0;
 	u32 page_cnt = p_chain->page_cnt, size, i;
+	dma_addr_t p_phys = 0, p_pbl_phys = 0;
+	void **pp_virt_addr_tbl = OSAL_NULL;
+	u8 *p_pbl_virt = OSAL_NULL;
+	void *p_virt = OSAL_NULL;
 
 	size = page_cnt * sizeof(*pp_virt_addr_tbl);
 	pp_virt_addr_tbl = (void **)OSAL_VZALLOC(p_dev, size);
@@ -5239,13 +5242,6 @@ static enum _ecore_status_t ecore_init_wfq_param(struct ecore_hwfn *p_hwfn,
 	non_requested_count = num_vports - req_count;
 
 	/* validate possible error cases */
-	if (req_rate > min_pf_rate) {
-		DP_VERBOSE(p_hwfn, ECORE_MSG_LINK,
-			   "Vport [%d] - Requested rate[%d Mbps] is greater than configured PF min rate[%d Mbps]\n",
-			   vport_id, req_rate, min_pf_rate);
-		return ECORE_INVAL;
-	}
-
 	if (req_rate < min_pf_rate / ECORE_WFQ_UNIT) {
 		DP_VERBOSE(p_hwfn, ECORE_MSG_LINK,
 			   "Vport [%d] - Requested rate[%d Mbps] is less than one percent of configured PF min rate[%d Mbps]\n",

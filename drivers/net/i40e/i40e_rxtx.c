@@ -1823,7 +1823,7 @@ i40e_dev_rx_queue_setup(struct rte_eth_dev *dev,
 	/* Zero all the descriptors in the ring. */
 	memset(rz->addr, 0, ring_size);
 
-	rxq->rx_ring_phys_addr = rte_mem_phy2mch(rz->memseg_id, rz->phys_addr);
+	rxq->rx_ring_phys_addr = rz->phys_addr;
 	rxq->rx_ring = (union i40e_rx_desc *)rz->addr;
 
 	len = (uint16_t)(nb_desc + RTE_PMD_I40E_RX_MAX_BURST);
@@ -2161,7 +2161,7 @@ i40e_dev_tx_queue_setup(struct rte_eth_dev *dev,
 	txq->vsi = vsi;
 	txq->tx_deferred_start = tx_conf->tx_deferred_start;
 
-	txq->tx_ring_phys_addr = rte_mem_phy2mch(tz->memseg_id, tz->phys_addr);
+	txq->tx_ring_phys_addr = tz->phys_addr;
 	txq->tx_ring = (struct i40e_tx_desc *)tz->addr;
 
 	/* Allocate software ring */
@@ -2223,12 +2223,8 @@ i40e_memzone_reserve(const char *name, uint32_t len, int socket_id)
 	if (mz)
 		return mz;
 
-	if (rte_xen_dom0_supported())
-		mz = rte_memzone_reserve_bounded(name, len,
-				socket_id, 0, I40E_RING_BASE_ALIGN, RTE_PGSIZE_2M);
-	else
-		mz = rte_memzone_reserve_aligned(name, len,
-				socket_id, 0, I40E_RING_BASE_ALIGN);
+	mz = rte_memzone_reserve_aligned(name, len,
+					 socket_id, 0, I40E_RING_BASE_ALIGN);
 	return mz;
 }
 
@@ -2309,17 +2305,39 @@ i40e_reset_rx_queue(struct i40e_rx_queue *rxq)
 void
 i40e_tx_queue_release_mbufs(struct i40e_tx_queue *txq)
 {
+	struct rte_eth_dev *dev;
 	uint16_t i;
+
+	dev = &rte_eth_devices[txq->port_id];
 
 	if (!txq || !txq->sw_ring) {
 		PMD_DRV_LOG(DEBUG, "Pointer to rxq or sw_ring is NULL");
 		return;
 	}
 
-	for (i = 0; i < txq->nb_tx_desc; i++) {
-		if (txq->sw_ring[i].mbuf) {
+	/**
+	 *  vPMD tx will not set sw_ring's mbuf to NULL after free,
+	 *  so need to free remains more carefully.
+	 */
+	if (dev->tx_pkt_burst == i40e_xmit_pkts_vec) {
+		i = txq->tx_next_dd - txq->tx_rs_thresh + 1;
+		if (txq->tx_tail < i) {
+			for (; i < txq->nb_tx_desc; i++) {
+				rte_pktmbuf_free_seg(txq->sw_ring[i].mbuf);
+				txq->sw_ring[i].mbuf = NULL;
+			}
+			i = 0;
+		}
+		for (; i < txq->tx_tail; i++) {
 			rte_pktmbuf_free_seg(txq->sw_ring[i].mbuf);
 			txq->sw_ring[i].mbuf = NULL;
+		}
+	} else {
+		for (i = 0; i < txq->nb_tx_desc; i++) {
+			if (txq->sw_ring[i].mbuf) {
+				rte_pktmbuf_free_seg(txq->sw_ring[i].mbuf);
+				txq->sw_ring[i].mbuf = NULL;
+			}
 		}
 	}
 }
@@ -2677,7 +2695,7 @@ i40e_fdir_setup_tx_resources(struct i40e_pf *pf)
 	txq->reg_idx = pf->fdir.fdir_vsi->base_queue;
 	txq->vsi = pf->fdir.fdir_vsi;
 
-	txq->tx_ring_phys_addr = rte_mem_phy2mch(tz->memseg_id, tz->phys_addr);
+	txq->tx_ring_phys_addr = tz->phys_addr;
 	txq->tx_ring = (struct i40e_tx_desc *)tz->addr;
 	/*
 	 * don't need to allocate software ring and reset for the fdir
@@ -2733,7 +2751,7 @@ i40e_fdir_setup_rx_resources(struct i40e_pf *pf)
 	rxq->reg_idx = pf->fdir.fdir_vsi->base_queue;
 	rxq->vsi = pf->fdir.fdir_vsi;
 
-	rxq->rx_ring_phys_addr = rte_mem_phy2mch(rz->memseg_id, rz->phys_addr);
+	rxq->rx_ring_phys_addr = rz->phys_addr;
 	rxq->rx_ring = (union i40e_rx_desc *)rz->addr;
 
 	/*

@@ -504,8 +504,6 @@ rte_mempool_populate_virt(struct rte_mempool *mp, char *addr,
 		     mp->populated_size < mp->size; off += phys_len) {
 
 		paddr = rte_mem_virt2phy(addr + off);
-		/* required for xen_dom0 to get the machine address */
-		paddr = rte_mem_phy2mch(-1, paddr);
 
 		if (paddr == RTE_BAD_PHYS_ADDR && rte_eal_has_hugepages()) {
 			ret = -EINVAL;
@@ -517,7 +515,6 @@ rte_mempool_populate_virt(struct rte_mempool *mp, char *addr,
 			phys_addr_t paddr_tmp;
 
 			paddr_tmp = rte_mem_virt2phy(addr + off + phys_len);
-			paddr_tmp = rte_mem_phy2mch(-1, paddr_tmp);
 
 			if (paddr_tmp != paddr + phys_len)
 				break;
@@ -562,20 +559,13 @@ rte_mempool_populate_default(struct rte_mempool *mp)
 	/* Get mempool capabilities */
 	mp_flags = 0;
 	ret = rte_mempool_ops_get_capabilities(mp, &mp_flags);
-	if (ret == -ENOTSUP)
-		RTE_LOG(DEBUG, MEMPOOL, "get_capability not supported for %s\n",
-					mp->name);
-	else if (ret < 0)
+	if ((ret < 0) && (ret != -ENOTSUP))
 		return ret;
 
 	/* update mempool capabilities */
 	mp->flags |= mp_flags;
 
-	if (rte_xen_dom0_supported()) {
-		pg_sz = RTE_PGSIZE_2M;
-		pg_shift = rte_bsf32(pg_sz);
-		align = pg_sz;
-	} else if (rte_eal_has_hugepages()) {
+	if (rte_eal_has_hugepages()) {
 		pg_shift = 0; /* not needed, zone is physically contiguous */
 		pg_sz = 0;
 		align = RTE_CACHE_LINE_SIZE;
@@ -613,7 +603,7 @@ rte_mempool_populate_default(struct rte_mempool *mp)
 		else
 			paddr = mz->phys_addr;
 
-		if (rte_eal_has_hugepages() && !rte_xen_dom0_supported())
+		if (rte_eal_has_hugepages())
 			ret = rte_mempool_populate_phys(mp, mz->addr,
 				paddr, mz->len,
 				rte_mempool_memchunk_mz_free,

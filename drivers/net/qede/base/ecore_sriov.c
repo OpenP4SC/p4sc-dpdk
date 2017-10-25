@@ -865,6 +865,11 @@ ecore_iov_enable_vf_access(struct ecore_hwfn *p_hwfn,
 	u32 igu_vf_conf = IGU_VF_CONF_FUNC_EN;
 	enum _ecore_status_t rc = ECORE_SUCCESS;
 
+	/* It's possible VF was previously considered malicious -
+	 * clear the indication even if we're only going to disable VF.
+	 */
+	vf->b_malicious = false;
+
 	if (vf->to_disable)
 		return ECORE_SUCCESS;
 
@@ -877,8 +882,6 @@ ecore_iov_enable_vf_access(struct ecore_hwfn *p_hwfn,
 
 	ecore_iov_vf_igu_reset(p_hwfn, p_ptt, vf);
 
-	/* It's possible VF was previously considered malicious */
-	vf->b_malicious = false;
 	rc = ecore_iov_enable_vf_access_msix(p_hwfn, p_ptt,
 					     vf->abs_vf_id, vf->num_sbs);
 	if (rc != ECORE_SUCCESS)
@@ -1381,7 +1384,7 @@ static void ecore_iov_send_response(struct ecore_hwfn *p_hwfn,
 	mbx->sw_mbx.response_size =
 	    length + sizeof(struct channel_list_end_tlv);
 
-	if (!p_hwfn->p_dev->b_hw_channel)
+	if (!p_vf->b_hw_channel)
 		return;
 #endif
 
@@ -1397,13 +1400,17 @@ static void ecore_iov_send_response(struct ecore_hwfn *p_hwfn,
 			     (sizeof(union pfvf_tlvs) - sizeof(u64)) / 4,
 			     &params);
 
-	ecore_dmae_host2host(p_hwfn, p_ptt, mbx->reply_phys,
-			     mbx->req_virt->first_tlv.reply_address,
-			     sizeof(u64) / 4, &params);
-
+	/* Once PF copies the rc to the VF, the latter can continue and
+	 * and send an additional message. So we have to make sure the
+	 * channel would be re-set to ready prior to that.
+	 */
 	REG_WR(p_hwfn,
 	       GTT_BAR0_MAP_REG_USDM_RAM +
 	       USTORM_VF_PF_CHANNEL_READY_OFFSET(eng_vf_id), 1);
+
+	ecore_dmae_host2host(p_hwfn, p_ptt, mbx->reply_phys,
+			     mbx->req_virt->first_tlv.reply_address,
+			     sizeof(u64) / 4, &params);
 
 	OSAL_IOV_PF_RESP_TYPE(p_hwfn, p_vf->relative_vf_id, status);
 }
@@ -2173,6 +2180,7 @@ static void ecore_iov_vf_mbx_stop_vport(struct ecore_hwfn *p_hwfn,
 	u8 status = PFVF_STATUS_SUCCESS;
 	enum _ecore_status_t rc;
 
+	OSAL_IOV_VF_VPORT_STOP(p_hwfn, vf);
 	vf->vport_instance--;
 	vf->spoof_chk = false;
 
@@ -3205,8 +3213,8 @@ static void ecore_iov_vf_mbx_vport_update(struct ecore_hwfn *p_hwfn,
 				   "Upper-layer prevents said VF"
 				   " configuration\n");
 		else
-			DP_NOTICE(p_hwfn, true,
-				  "No feature tlvs found for vport update\n");
+			DP_VERBOSE(p_hwfn, ECORE_MSG_IOV,
+				   "No feature tlvs found for vport update\n");
 		status = PFVF_STATUS_NOT_SUPPORTED;
 		goto out;
 	}
@@ -3411,12 +3419,13 @@ static void ecore_iov_vf_mbx_ucast_filter(struct ecore_hwfn *p_hwfn,
 		goto out;
 	}
 
-	/* Update shadow copy of the VF configuration */
+	/* Update shadow copy of the VF configuration. In case shadow indicates
+	 * the action should be blocked return success to VF to imitate the
+	 * firmware behaviour in such case.
+	 */
 	if (ecore_iov_vf_update_unicast_shadow(p_hwfn, vf, &params) !=
-	    ECORE_SUCCESS) {
-		status = PFVF_STATUS_FAILURE;
+	    ECORE_SUCCESS)
 		goto out;
-	}
 
 	/* Determine if the unicast filtering is acceptible by PF */
 	if ((p_bulletin->valid_bitmap & (1 << VLAN_ADDR_FORCED)) &&
@@ -4828,3 +4837,17 @@ ecore_iov_get_vf_min_rate(struct ecore_hwfn *p_hwfn, int vfid)
 	else
 		return 0;
 }
+
+#ifdef CONFIG_ECORE_SW_CHANNEL
+void ecore_iov_set_vf_hw_channel(struct ecore_hwfn *p_hwfn, int vfid,
+				 bool b_is_hw)
+{
+	struct ecore_vf_info *vf_info;
+
+	vf_info = ecore_iov_get_vf_info(p_hwfn, (u16)vfid, true);
+	if (!vf_info)
+		return;
+
+	vf_info->b_hw_channel = b_is_hw;
+}
+#endif

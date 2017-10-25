@@ -43,12 +43,13 @@ ifeq ($(shell test $(GCC_VERSION) -le 50 && echo 1), 1)
 CFLAGS += -Wno-missing-field-initializers
 endif
 endif
+LDLIBS += -lrte_eal -lrte_eventdev -lrte_kvargs -lrte_ring
 
 # library version
 LIBABIVER := 1
 
 # versioning export map
-EXPORT_MAP := rte_pmd_evdev_sw_version.map
+EXPORT_MAP := rte_pmd_sw_event_version.map
 
 # library source files
 SRCS-$(CONFIG_RTE_LIBRTE_PMD_SW_EVENTDEV) += sw_evdev.c

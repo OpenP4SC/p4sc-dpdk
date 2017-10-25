@@ -101,6 +101,10 @@
 #define MLX5DV_CONTEXT_FLAGS_ENHANCED_MPW (1 << 3)
 #endif
 
+#ifndef HAVE_IBV_MLX5_MOD_CQE_128B_COMP
+#define MLX5DV_CONTEXT_FLAGS_CQE_128B_COMP (1 << 4)
+#endif
+
 struct mlx5_args {
 	int cqe_comp;
 	int txq_inline;
@@ -132,6 +136,52 @@ mlx5_getenv_int(const char *name)
 }
 
 /**
+ * Verbs callback to allocate a memory. This function should allocate the space
+ * according to the size provided residing inside a huge page.
+ * Please note that all allocation must respect the alignment from libmlx5
+ * (i.e. currently sysconf(_SC_PAGESIZE)).
+ *
+ * @param[in] size
+ *   The size in bytes of the memory to allocate.
+ * @param[in] data
+ *   A pointer to the callback data.
+ *
+ * @return
+ *   a pointer to the allocate space.
+ */
+static void *
+mlx5_alloc_verbs_buf(size_t size, void *data)
+{
+	struct priv *priv = data;
+	void *ret;
+	size_t alignment = sysconf(_SC_PAGESIZE);
+
+	assert(data != NULL);
+	assert(!mlx5_is_secondary());
+	ret = rte_malloc_socket(__func__, size, alignment,
+				priv->dev->device->numa_node);
+	DEBUG("Extern alloc size: %lu, align: %lu: %p", size, alignment, ret);
+	return ret;
+}
+
+/**
+ * Verbs callback to free a memory.
+ *
+ * @param[in] ptr
+ *   A pointer to the memory to free.
+ * @param[in] data
+ *   A pointer to the callback data.
+ */
+static void
+mlx5_free_verbs_buf(void *ptr, void *data __rte_unused)
+{
+	assert(data != NULL);
+	assert(!mlx5_is_secondary());
+	DEBUG("Extern free request: %p", ptr);
+	rte_free(ptr);
+}
+
+/**
  * DPDK callback to close the device.
  *
  * Destroy all queues and objects, free memory.
@@ -144,6 +194,7 @@ mlx5_dev_close(struct rte_eth_dev *dev)
 {
 	struct priv *priv = mlx5_get_priv(dev);
 	unsigned int i;
+	int ret;
 
 	priv_lock(priv);
 	DEBUG("%p: closing device \"%s\"",
@@ -151,48 +202,23 @@ mlx5_dev_close(struct rte_eth_dev *dev)
 	      ((priv->ctx != NULL) ? priv->ctx->device->name : ""));
 	/* In case mlx5_dev_stop() has not been called. */
 	priv_dev_interrupt_handler_uninstall(priv, dev);
-	priv_special_flow_disable_all(priv);
-	priv_mac_addrs_disable(priv);
-	priv_destroy_hash_rxqs(priv);
-
-	/* Remove flow director elements. */
-	priv_fdir_disable(priv);
-	priv_fdir_delete_filters_list(priv);
-
+	priv_dev_traffic_disable(priv, dev);
 	/* Prevent crashes when queues are still in use. */
 	dev->rx_pkt_burst = removed_rx_burst;
 	dev->tx_pkt_burst = removed_tx_burst;
 	if (priv->rxqs != NULL) {
 		/* XXX race condition if mlx5_rx_burst() is still running. */
 		usleep(1000);
-		for (i = 0; (i != priv->rxqs_n); ++i) {
-			struct rxq *rxq = (*priv->rxqs)[i];
-			struct rxq_ctrl *rxq_ctrl;
-
-			if (rxq == NULL)
-				continue;
-			rxq_ctrl = container_of(rxq, struct rxq_ctrl, rxq);
-			(*priv->rxqs)[i] = NULL;
-			rxq_cleanup(rxq_ctrl);
-			rte_free(rxq_ctrl);
-		}
+		for (i = 0; (i != priv->rxqs_n); ++i)
+			mlx5_priv_rxq_release(priv, i);
 		priv->rxqs_n = 0;
 		priv->rxqs = NULL;
 	}
 	if (priv->txqs != NULL) {
 		/* XXX race condition if mlx5_tx_burst() is still running. */
 		usleep(1000);
-		for (i = 0; (i != priv->txqs_n); ++i) {
-			struct txq *txq = (*priv->txqs)[i];
-			struct txq_ctrl *txq_ctrl;
-
-			if (txq == NULL)
-				continue;
-			txq_ctrl = container_of(txq, struct txq_ctrl, txq);
-			(*priv->txqs)[i] = NULL;
-			txq_cleanup(txq_ctrl);
-			rte_free(txq_ctrl);
-		}
+		for (i = 0; (i != priv->txqs_n); ++i)
+			mlx5_priv_txq_release(priv, i);
 		priv->txqs_n = 0;
 		priv->txqs = NULL;
 	}
@@ -202,18 +228,40 @@ mlx5_dev_close(struct rte_eth_dev *dev)
 		claim_zero(ibv_close_device(priv->ctx));
 	} else
 		assert(priv->ctx == NULL);
-	if (priv->rss_conf != NULL) {
-		for (i = 0; (i != hash_rxq_init_n); ++i)
-			rte_free((*priv->rss_conf)[i]);
-		rte_free(priv->rss_conf);
-	}
+	if (priv->rss_conf.rss_key != NULL)
+		rte_free(priv->rss_conf.rss_key);
 	if (priv->reta_idx != NULL)
 		rte_free(priv->reta_idx);
+	priv_socket_uninit(priv);
+	ret = mlx5_priv_hrxq_ibv_verify(priv);
+	if (ret)
+		WARN("%p: some Hash Rx queue still remain", (void *)priv);
+	ret = mlx5_priv_ind_table_ibv_verify(priv);
+	if (ret)
+		WARN("%p: some Indirection table still remain", (void *)priv);
+	ret = mlx5_priv_rxq_ibv_verify(priv);
+	if (ret)
+		WARN("%p: some Verbs Rx queue still remain", (void *)priv);
+	ret = mlx5_priv_rxq_verify(priv);
+	if (ret)
+		WARN("%p: some Rx Queues still remain", (void *)priv);
+	ret = mlx5_priv_txq_ibv_verify(priv);
+	if (ret)
+		WARN("%p: some Verbs Tx queue still remain", (void *)priv);
+	ret = mlx5_priv_txq_verify(priv);
+	if (ret)
+		WARN("%p: some Tx Queues still remain", (void *)priv);
+	ret = priv_flow_verify(priv);
+	if (ret)
+		WARN("%p: some flows still remain", (void *)priv);
+	ret = priv_mr_verify(priv);
+	if (ret)
+		WARN("%p: some Memory Region still remain", (void *)priv);
 	priv_unlock(priv);
 	memset(priv, 0, sizeof(*priv));
 }
 
-static const struct eth_dev_ops mlx5_dev_ops = {
+const struct eth_dev_ops mlx5_dev_ops = {
 	.dev_configure = mlx5_dev_configure,
 	.dev_start = mlx5_dev_start,
 	.dev_stop = mlx5_dev_stop,
@@ -249,6 +297,53 @@ static const struct eth_dev_ops mlx5_dev_ops = {
 	.reta_query = mlx5_dev_rss_reta_query,
 	.rss_hash_update = mlx5_rss_hash_update,
 	.rss_hash_conf_get = mlx5_rss_hash_conf_get,
+	.filter_ctrl = mlx5_dev_filter_ctrl,
+	.rx_descriptor_status = mlx5_rx_descriptor_status,
+	.tx_descriptor_status = mlx5_tx_descriptor_status,
+	.rx_queue_intr_enable = mlx5_rx_intr_enable,
+	.rx_queue_intr_disable = mlx5_rx_intr_disable,
+};
+
+static const struct eth_dev_ops mlx5_dev_sec_ops = {
+	.stats_get = mlx5_stats_get,
+	.stats_reset = mlx5_stats_reset,
+	.xstats_get = mlx5_xstats_get,
+	.xstats_reset = mlx5_xstats_reset,
+	.xstats_get_names = mlx5_xstats_get_names,
+	.dev_infos_get = mlx5_dev_infos_get,
+	.rx_descriptor_status = mlx5_rx_descriptor_status,
+	.tx_descriptor_status = mlx5_tx_descriptor_status,
+};
+
+/* Available operators in flow isolated mode. */
+const struct eth_dev_ops mlx5_dev_ops_isolate = {
+	.dev_configure = mlx5_dev_configure,
+	.dev_start = mlx5_dev_start,
+	.dev_stop = mlx5_dev_stop,
+	.dev_set_link_down = mlx5_set_link_down,
+	.dev_set_link_up = mlx5_set_link_up,
+	.dev_close = mlx5_dev_close,
+	.link_update = mlx5_link_update,
+	.stats_get = mlx5_stats_get,
+	.stats_reset = mlx5_stats_reset,
+	.xstats_get = mlx5_xstats_get,
+	.xstats_reset = mlx5_xstats_reset,
+	.xstats_get_names = mlx5_xstats_get_names,
+	.dev_infos_get = mlx5_dev_infos_get,
+	.dev_supported_ptypes_get = mlx5_dev_supported_ptypes_get,
+	.vlan_filter_set = mlx5_vlan_filter_set,
+	.rx_queue_setup = mlx5_rx_queue_setup,
+	.tx_queue_setup = mlx5_tx_queue_setup,
+	.rx_queue_release = mlx5_rx_queue_release,
+	.tx_queue_release = mlx5_tx_queue_release,
+	.flow_ctrl_get = mlx5_dev_get_flow_ctrl,
+	.flow_ctrl_set = mlx5_dev_set_flow_ctrl,
+	.mac_addr_remove = mlx5_mac_addr_remove,
+	.mac_addr_add = mlx5_mac_addr_add,
+	.mac_addr_set = mlx5_mac_addr_set,
+	.mtu_set = mlx5_dev_set_mtu,
+	.vlan_strip_queue_set = mlx5_vlan_strip_queue_set,
+	.vlan_offload_set = mlx5_vlan_offload_set,
 	.filter_ctrl = mlx5_dev_filter_ctrl,
 	.rx_descriptor_status = mlx5_rx_descriptor_status,
 	.tx_descriptor_status = mlx5_tx_descriptor_status,
@@ -448,10 +543,14 @@ mlx5_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 	struct ibv_device_attr_ex device_attr;
 	unsigned int sriov;
 	unsigned int mps;
+	unsigned int cqe_comp;
 	unsigned int tunnel_en = 0;
 	int idx;
 	int i;
 	struct mlx5dv_context attrs_out;
+#ifdef HAVE_IBV_DEVICE_COUNTERS_SET_SUPPORT
+	struct ibv_counter_set_description cs_desc;
+#endif
 
 	(void)pci_drv;
 	assert(pci_drv == &mlx5_driver);
@@ -551,6 +650,11 @@ mlx5_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 		INFO("MPW is disabled\n");
 		mps = MLX5_MPW_DISABLED;
 	}
+	if (RTE_CACHE_LINE_SIZE == 128 &&
+	    !(attrs_out.flags & MLX5DV_CONTEXT_FLAGS_CQE_128B_COMP))
+		cqe_comp = 0;
+	else
+		cqe_comp = 1;
 	if (ibv_query_device_ex(attr_ctx, NULL, &device_attr))
 		goto error;
 	INFO("%u port(s) detected", device_attr.orig_attr.phys_port_cnt);
@@ -566,6 +670,7 @@ mlx5_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 		struct ibv_device_attr_ex device_attr_ex;
 		struct ether_addr mac;
 		uint16_t num_vfs = 0;
+		struct ibv_device_attr_ex device_attr;
 		struct mlx5_args args = {
 			.cqe_comp = MLX5_ARG_UNSET,
 			.txq_inline = MLX5_ARG_UNSET,
@@ -578,6 +683,40 @@ mlx5_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 			.rx_vec_en = MLX5_ARG_UNSET,
 		};
 
+		mlx5_dev[idx].ports |= test;
+
+		if (mlx5_is_secondary()) {
+			/* from rte_ethdev.c */
+			char name[RTE_ETH_NAME_MAX_LEN];
+
+			snprintf(name, sizeof(name), "%s port %u",
+				 ibv_get_device_name(ibv_dev), port);
+			eth_dev = rte_eth_dev_attach_secondary(name);
+			if (eth_dev == NULL) {
+				ERROR("can not attach rte ethdev");
+				err = ENOMEM;
+				goto error;
+			}
+			eth_dev->device = &pci_dev->device;
+			eth_dev->dev_ops = &mlx5_dev_sec_ops;
+			priv = eth_dev->data->dev_private;
+			/* Receive command fd from primary process */
+			err = priv_socket_connect(priv);
+			if (err < 0) {
+				err = -err;
+				goto error;
+			}
+			/* Remap UAR for Tx queues. */
+			err = priv_tx_uar_remap(priv, err);
+			if (err < 0) {
+				err = -err;
+				goto error;
+			}
+			priv_dev_select_rx_function(priv, eth_dev);
+			priv_dev_select_tx_function(priv, eth_dev);
+			continue;
+		}
+
 		DEBUG("using port %u (%08" PRIx32 ")", port, test);
 
 		ctx = ibv_open_device(ibv_dev);
@@ -586,6 +725,7 @@ mlx5_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 			goto port_error;
 		}
 
+		ibv_query_device_ex(ctx, NULL, &device_attr);
 		/* Check port status. */
 		err = ibv_query_port(ctx, port, &port_attr);
 		if (err) {
@@ -626,12 +766,14 @@ mlx5_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 		}
 
 		priv->ctx = ctx;
+		strncpy(priv->ibdev_path, priv->ctx->device->ibdev_path,
+			sizeof(priv->ibdev_path));
 		priv->device_attr = device_attr;
 		priv->port = port;
 		priv->pd = pd;
 		priv->mtu = ETHER_MTU;
 		priv->mps = mps; /* Enable MPW by default if supported. */
-		priv->cqe_comp = 1; /* Enable compression by default. */
+		priv->cqe_comp = cqe_comp;
 		priv->tunnel_en = tunnel_en;
 		/* Enable vector by default if supported. */
 		priv->tx_vec_en = 1;
@@ -661,6 +803,13 @@ mlx5_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 		DEBUG("L2 tunnel checksum offloads are %ssupported",
 		      (priv->hw_csum_l2tun ? "" : "not "));
 
+#ifdef HAVE_IBV_DEVICE_COUNTERS_SET_SUPPORT
+		priv->counter_set_supported = !!(device_attr.max_counter_sets);
+		ibv_describe_counter_set(ctx, 0, &cs_desc);
+		DEBUG("counter type = %d, num of cs = %ld, attributes = %d",
+		      cs_desc.counter_type, cs_desc.num_of_cs,
+		      cs_desc.attributes);
+#endif
 		priv->ind_table_max_size =
 			device_attr_ex.rss_caps.max_rwq_indirection_table_size;
 		/* Remove this check once DPDK supports larger/variable
@@ -720,19 +869,10 @@ mlx5_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 				priv->txq_inline = MLX5_WQE_SIZE_MAX -
 						   MLX5_WQE_SIZE;
 		}
-		/* Allocate and register default RSS hash keys. */
-		priv->rss_conf = rte_calloc(__func__, hash_rxq_init_n,
-					    sizeof((*priv->rss_conf)[0]), 0);
-		if (priv->rss_conf == NULL) {
-			err = ENOMEM;
-			goto port_error;
+		if (priv->cqe_comp && !cqe_comp) {
+			WARN("Rx CQE compression isn't supported");
+			priv->cqe_comp = 0;
 		}
-		err = rss_hash_rss_conf_new_key(priv,
-						rss_hash_default_key,
-						rss_hash_default_key_len,
-						ETH_RSS_PROTO_MASK);
-		if (err)
-			goto port_error;
 		/* Configure the first MAC address by default. */
 		if (priv_get_mac(priv, &mac.addr_bytes)) {
 			ERROR("cannot get MAC address, is mlx5_en loaded?"
@@ -745,14 +885,6 @@ mlx5_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 		     mac.addr_bytes[0], mac.addr_bytes[1],
 		     mac.addr_bytes[2], mac.addr_bytes[3],
 		     mac.addr_bytes[4], mac.addr_bytes[5]);
-		/* Register MAC address. */
-		claim_zero(priv_mac_addr_add(priv, 0,
-					     (const uint8_t (*)[ETHER_ADDR_LEN])
-					     mac.addr_bytes));
-		/* Initialize FD filters list. */
-		err = fdir_init_filters_list(priv);
-		if (err)
-			goto port_error;
 #ifndef NDEBUG
 		{
 			char ifname[IF_NAMESIZE];
@@ -789,7 +921,19 @@ mlx5_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 		eth_dev->device->driver = &mlx5_driver.driver;
 		priv->dev = eth_dev;
 		eth_dev->dev_ops = &mlx5_dev_ops;
+		/* Register MAC address. */
+		claim_zero(mlx5_mac_addr_add(eth_dev, &mac, 0, 0));
 		TAILQ_INIT(&priv->flows);
+		TAILQ_INIT(&priv->ctrl_flows);
+
+		/* Hint libmlx5 to use PMD allocator for data plane resources */
+		struct mlx5dv_ctx_allocators alctr = {
+			.alloc = &mlx5_alloc_verbs_buf,
+			.free = &mlx5_free_verbs_buf,
+			.data = priv,
+		};
+		mlx5dv_set_context_attr(ctx, MLX5DV_CTX_ATTR_BUF_ALLOCATORS,
+					(void *)((uintptr_t)&alctr));
 
 		/* Bring Ethernet device up. */
 		DEBUG("forcing Ethernet interface up");
@@ -798,10 +942,8 @@ mlx5_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 		continue;
 
 port_error:
-		if (priv) {
-			rte_free(priv->rss_conf);
+		if (priv)
 			rte_free(priv);
-		}
 		if (pd)
 			claim_zero(ibv_dealloc_pd(pd));
 		if (ctx)
@@ -896,6 +1038,9 @@ rte_mlx5_pmd_init(void)
 	setenv("RDMAV_HUGEPAGES_SAFE", "1", 1);
 	/* Don't map UAR to WC if BlueFlame is not used.*/
 	setenv("MLX5_SHUT_UP_BF", "1", 1);
+	/* Match the size of Rx completion entry to the size of a cacheline. */
+	if (RTE_CACHE_LINE_SIZE == 128)
+		setenv("MLX5_CQE_SIZE", "128", 0);
 	ibv_fork_init();
 	rte_pci_register(&mlx5_driver);
 }

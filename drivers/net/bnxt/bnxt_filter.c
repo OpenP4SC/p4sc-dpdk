@@ -325,7 +325,7 @@ bnxt_validate_and_parse_flow_type(const struct rte_flow_item pattern[],
 	uint32_t en = 0;
 
 	use_ntuple = bnxt_filter_type_check(pattern, error);
-	RTE_LOG(ERR, PMD, "Use NTUPLE %d\n", use_ntuple);
+	RTE_LOG(DEBUG, PMD, "Use NTUPLE %d\n", use_ntuple);
 	if (use_ntuple < 0)
 		return use_ntuple;
 
@@ -815,7 +815,7 @@ bnxt_validate_and_parse_flow(struct rte_eth_dev *dev,
 			rc = -rte_errno;
 			goto ret;
 		}
-		RTE_LOG(ERR, PMD, "Queue index %d\n", act_q->index);
+		RTE_LOG(DEBUG, PMD, "Queue index %d\n", act_q->index);
 
 		vnic0 = STAILQ_FIRST(&bp->ff_pool[0]);
 		vnic = STAILQ_FIRST(&bp->ff_pool[act_q->index]);
@@ -828,12 +828,20 @@ bnxt_validate_and_parse_flow(struct rte_eth_dev *dev,
 		}
 		filter->dst_id = vnic->fw_vnic_id;
 		filter1 = bnxt_get_l2_filter(bp, filter, vnic);
+		if (filter1 == NULL) {
+			rc = -ENOSPC;
+			goto ret;
+		}
 		filter->fw_l2_filter_id = filter1->fw_l2_filter_id;
 		RTE_LOG(DEBUG, PMD, "VNIC found\n");
 		break;
 	case RTE_FLOW_ACTION_TYPE_DROP:
 		vnic0 = STAILQ_FIRST(&bp->ff_pool[0]);
 		filter1 = bnxt_get_l2_filter(bp, filter, vnic0);
+		if (filter1 == NULL) {
+			rc = -ENOSPC;
+			goto ret;
+		}
 		filter->fw_l2_filter_id = filter1->fw_l2_filter_id;
 		if (filter->filter_type == HWRM_CFA_EM_FILTER)
 			filter->flags =
@@ -845,6 +853,10 @@ bnxt_validate_and_parse_flow(struct rte_eth_dev *dev,
 	case RTE_FLOW_ACTION_TYPE_COUNT:
 		vnic0 = STAILQ_FIRST(&bp->ff_pool[0]);
 		filter1 = bnxt_get_l2_filter(bp, filter, vnic0);
+		if (filter1 == NULL) {
+			rc = -ENOSPC;
+			goto ret;
+		}
 		filter->fw_l2_filter_id = filter1->fw_l2_filter_id;
 		filter->flags = HWRM_CFA_NTUPLE_FILTER_ALLOC_INPUT_FLAGS_METER;
 		break;
@@ -892,9 +904,59 @@ bnxt_flow_validate(struct rte_eth_dev *dev,
 	ret = bnxt_validate_and_parse_flow(dev, pattern, actions, attr,
 					   error, filter);
 	/* No need to hold on to this filter if we are just validating flow */
+	filter->fw_l2_filter_id = -1;
 	bnxt_free_filter(bp, filter);
 
 	return ret;
+}
+
+static int
+bnxt_match_filter(struct bnxt *bp, struct bnxt_filter_info *nf)
+{
+	struct bnxt_filter_info *mf;
+	struct rte_flow *flow;
+	int i;
+
+	for (i = bp->nr_vnics - 1; i >= 0; i--) {
+		struct bnxt_vnic_info *vnic = &bp->vnic_info[i];
+
+		STAILQ_FOREACH(flow, &vnic->flow_list, next) {
+			mf = flow->filter;
+
+			if (mf->filter_type == nf->filter_type &&
+			    mf->flags == nf->flags &&
+			    mf->src_port == nf->src_port &&
+			    mf->src_port_mask == nf->src_port_mask &&
+			    mf->dst_port == nf->dst_port &&
+			    mf->dst_port_mask == nf->dst_port_mask &&
+			    mf->ip_protocol == nf->ip_protocol &&
+			    mf->ip_addr_type == nf->ip_addr_type &&
+			    mf->ethertype == nf->ethertype &&
+			    mf->vni == nf->vni &&
+			    mf->tunnel_type == nf->tunnel_type &&
+			    mf->l2_ovlan == nf->l2_ovlan &&
+			    mf->l2_ovlan_mask == nf->l2_ovlan_mask &&
+			    mf->l2_ivlan == nf->l2_ivlan &&
+			    mf->l2_ivlan_mask == nf->l2_ivlan_mask &&
+			    !memcmp(mf->l2_addr, nf->l2_addr, ETHER_ADDR_LEN) &&
+			    !memcmp(mf->l2_addr_mask, nf->l2_addr_mask,
+				    ETHER_ADDR_LEN) &&
+			    !memcmp(mf->src_macaddr, nf->src_macaddr,
+				    ETHER_ADDR_LEN) &&
+			    !memcmp(mf->dst_macaddr, nf->dst_macaddr,
+				    ETHER_ADDR_LEN) &&
+			    !memcmp(mf->src_ipaddr, nf->src_ipaddr,
+				    sizeof(nf->src_ipaddr)) &&
+			    !memcmp(mf->src_ipaddr_mask, nf->src_ipaddr_mask,
+				    sizeof(nf->src_ipaddr_mask)) &&
+			    !memcmp(mf->dst_ipaddr, nf->dst_ipaddr,
+				    sizeof(nf->dst_ipaddr)) &&
+			    !memcmp(mf->dst_ipaddr_mask, nf->dst_ipaddr_mask,
+				    sizeof(nf->dst_ipaddr_mask)))
+				return -EEXIST;
+		}
+	}
+	return 0;
 }
 
 static struct rte_flow *
@@ -906,7 +968,7 @@ bnxt_flow_create(struct rte_eth_dev *dev,
 {
 	struct bnxt *bp = (struct bnxt *)dev->data->dev_private;
 	struct bnxt_filter_info *filter;
-	struct bnxt_vnic_info *vnic;
+	struct bnxt_vnic_info *vnic = NULL;
 	struct rte_flow *flow;
 	unsigned int i;
 	int ret = 0;
@@ -936,6 +998,12 @@ bnxt_flow_create(struct rte_eth_dev *dev,
 	if (ret != 0)
 		goto free_filter;
 
+	ret = bnxt_match_filter(bp, filter);
+	if (ret != 0) {
+		RTE_LOG(DEBUG, PMD, "Flow already exists.\n");
+		goto free_filter;
+	}
+
 	if (filter->filter_type == HWRM_CFA_EM_FILTER) {
 		filter->enables |=
 			HWRM_CFA_EM_FLOW_ALLOC_INPUT_ENABLES_L2_FILTER_ID;
@@ -961,11 +1029,16 @@ bnxt_flow_create(struct rte_eth_dev *dev,
 		return flow;
 	}
 free_filter:
+	filter->fw_l2_filter_id = -1;
 	bnxt_free_filter(bp, filter);
 free_flow:
-	RTE_LOG(ERR, PMD, "Failed to create flow.\n");
-	rte_flow_error_set(error, -ret,
-			   RTE_FLOW_ERROR_TYPE_HANDLE, NULL,
+	if (ret == -EEXIST)
+		rte_flow_error_set(error, ret,
+				   RTE_FLOW_ERROR_TYPE_HANDLE, NULL,
+				   "Matching Flow exists.");
+	else
+		rte_flow_error_set(error, -ret,
+				   RTE_FLOW_ERROR_TYPE_HANDLE, NULL,
 			   "Failed to create flow.");
 	rte_free(flow);
 	flow = NULL;
@@ -982,6 +1055,9 @@ bnxt_flow_destroy(struct rte_eth_dev *dev,
 	struct bnxt_vnic_info *vnic = flow->vnic;
 	int ret = 0;
 
+	ret = bnxt_match_filter(bp, filter);
+	if (ret == 0)
+		RTE_LOG(ERR, PMD, "Could not find matching flow\n");
 	if (filter->filter_type == HWRM_CFA_EM_FILTER)
 		ret = bnxt_hwrm_clear_em_filter(bp, filter);
 	if (filter->filter_type == HWRM_CFA_NTUPLE_FILTER)

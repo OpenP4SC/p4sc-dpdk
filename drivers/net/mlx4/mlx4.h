@@ -36,6 +36,7 @@
 
 #include <net/if.h>
 #include <stdint.h>
+#include <sys/queue.h>
 
 /* Verbs headers do not support -pedantic. */
 #ifdef PEDANTIC
@@ -51,13 +52,19 @@
 #include <rte_interrupts.h>
 #include <rte_mempool.h>
 
-/* Request send completion once in every 64 sends, might be less. */
+/** Maximum number of simultaneous MAC addresses. This value is arbitrary. */
+#define MLX4_MAX_MAC_ADDRESSES 128
+
+/** Request send completion once in every 64 sends, might be less. */
 #define MLX4_PMD_TX_PER_COMP_REQ 64
 
-/* Maximum size for inline data. */
+/** Maximum size for inline data. */
 #define MLX4_PMD_MAX_INLINE 0
 
-/*
+/** Fixed RSS hash key size in bytes. Cannot be modified. */
+#define MLX4_RSS_HASH_KEY_SIZE 40
+
+/**
  * Maximum number of cached Memory Pools (MPs) per TX queue. Each RTE MP
  * from which buffers are to be transmitted will have to be mapped by this
  * driver to their own Memory Region (MR). This is a slow operation.
@@ -68,10 +75,10 @@
 #define MLX4_PMD_TX_MP_CACHE 8
 #endif
 
-/* Interrupt alarm timeout value in microseconds. */
+/** Interrupt alarm timeout value in microseconds. */
 #define MLX4_INTR_ALARM_TIMEOUT 100000
 
-/* Port parameter. */
+/** Port parameter. */
 #define MLX4_PMD_PORT_KVARG "port"
 
 enum {
@@ -84,29 +91,36 @@ enum {
 	PCI_DEVICE_ID_MELLANOX_CONNECTX3PRO = 0x1007,
 };
 
+/** Driver name reported to lower layers and used in log output. */
 #define MLX4_DRIVER_NAME "net_mlx4"
 
+struct mlx4_drop;
+struct mlx4_rss;
 struct rxq;
 struct txq;
 struct rte_flow;
 
+/** Private data structure. */
 struct priv {
-	struct rte_eth_dev *dev; /* Ethernet device. */
-	struct ibv_context *ctx; /* Verbs context. */
-	struct ibv_device_attr device_attr; /* Device properties. */
-	struct ibv_pd *pd; /* Protection Domain. */
-	struct ether_addr mac; /* MAC address. */
-	struct ibv_flow *mac_flow; /* Flow associated with MAC address. */
+	struct rte_eth_dev *dev; /**< Ethernet device. */
+	struct ibv_context *ctx; /**< Verbs context. */
+	struct ibv_device_attr device_attr; /**< Device properties. */
+	struct ibv_pd *pd; /**< Protection Domain. */
 	/* Device properties. */
-	uint16_t mtu; /* Configured MTU. */
-	uint8_t port; /* Physical port number. */
-	unsigned int started:1; /* Device started, flows enabled. */
-	unsigned int vf:1; /* This is a VF device. */
-	unsigned int intr_alarm:1; /* An interrupt alarm is scheduled. */
-	unsigned int isolated:1; /* Toggle isolated mode. */
-	struct rte_intr_handle intr_handle; /* Port interrupt handle. */
-	struct rte_flow_drop *flow_drop_queue; /* Flow drop queue. */
-	LIST_HEAD(mlx4_flows, rte_flow) flows;
+	uint16_t mtu; /**< Configured MTU. */
+	uint8_t port; /**< Physical port number. */
+	uint32_t started:1; /**< Device started, flows enabled. */
+	uint32_t vf:1; /**< This is a VF device. */
+	uint32_t intr_alarm:1; /**< An interrupt alarm is scheduled. */
+	uint32_t isolated:1; /**< Toggle isolated mode. */
+	uint32_t hw_csum:1; /* Checksum offload is supported. */
+	uint32_t hw_csum_l2tun:1; /* Checksum support for L2 tunnels. */
+	struct rte_intr_handle intr_handle; /**< Port interrupt handle. */
+	struct mlx4_drop *drop; /**< Shared resources for drop flow rules. */
+	LIST_HEAD(, mlx4_rss) rss; /**< Shared targets for Rx flow rules. */
+	LIST_HEAD(, rte_flow) flows; /**< Configured flow rule handles. */
+	struct ether_addr mac[MLX4_MAX_MAC_ADDRESSES];
+	/**< Configured MAC addresses. Unused entries are zeroed. */
 };
 
 /* mlx4_ethdev.c */
@@ -117,7 +131,16 @@ int mlx4_mtu_get(struct priv *priv, uint16_t *mtu);
 int mlx4_mtu_set(struct rte_eth_dev *dev, uint16_t mtu);
 int mlx4_dev_set_link_down(struct rte_eth_dev *dev);
 int mlx4_dev_set_link_up(struct rte_eth_dev *dev);
-void mlx4_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats);
+void mlx4_promiscuous_enable(struct rte_eth_dev *dev);
+void mlx4_promiscuous_disable(struct rte_eth_dev *dev);
+void mlx4_allmulticast_enable(struct rte_eth_dev *dev);
+void mlx4_allmulticast_disable(struct rte_eth_dev *dev);
+void mlx4_mac_addr_remove(struct rte_eth_dev *dev, uint32_t index);
+int mlx4_mac_addr_add(struct rte_eth_dev *dev, struct ether_addr *mac_addr,
+		      uint32_t index, uint32_t vmdq);
+void mlx4_mac_addr_set(struct rte_eth_dev *dev, struct ether_addr *mac_addr);
+int mlx4_vlan_filter_set(struct rte_eth_dev *dev, uint16_t vlan_id, int on);
+int mlx4_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats);
 void mlx4_stats_reset(struct rte_eth_dev *dev);
 void mlx4_dev_infos_get(struct rte_eth_dev *dev,
 			struct rte_eth_dev_info *info);

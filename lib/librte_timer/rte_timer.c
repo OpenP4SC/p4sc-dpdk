@@ -432,7 +432,8 @@ rte_timer_reset(struct rte_timer *tim, uint64_t ticks,
 	uint64_t period;
 
 	if (unlikely((tim_lcore != (unsigned)LCORE_ID_ANY) &&
-			!rte_lcore_is_enabled(tim_lcore)))
+			!(rte_lcore_is_enabled(tim_lcore) ||
+				rte_lcore_has_role(tim_lcore, ROLE_SERVICE))))
 		return -1;
 
 	if (type == PERIODICAL)
@@ -525,7 +526,7 @@ void rte_timer_manage(void)
 		return;
 	cur_time = rte_get_timer_cycles();
 
-#ifdef RTE_ARCH_X86_64
+#ifdef RTE_ARCH_64
 	/* on 64-bit the value cached in the pending_head.expired will be
 	 * updated atomically, so we can consult that for a quick check here
 	 * outside the lock */

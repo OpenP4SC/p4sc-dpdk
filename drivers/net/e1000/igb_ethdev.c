@@ -112,7 +112,7 @@ static void eth_igb_allmulticast_enable(struct rte_eth_dev *dev);
 static void eth_igb_allmulticast_disable(struct rte_eth_dev *dev);
 static int  eth_igb_link_update(struct rte_eth_dev *dev,
 				int wait_to_complete);
-static void eth_igb_stats_get(struct rte_eth_dev *dev,
+static int eth_igb_stats_get(struct rte_eth_dev *dev,
 				struct rte_eth_stats *rte_stats);
 static int eth_igb_xstats_get(struct rte_eth_dev *dev,
 			      struct rte_eth_xstat *xstats, unsigned n);
@@ -188,7 +188,7 @@ static void igbvf_promiscuous_disable(struct rte_eth_dev *dev);
 static void igbvf_allmulticast_enable(struct rte_eth_dev *dev);
 static void igbvf_allmulticast_disable(struct rte_eth_dev *dev);
 static int eth_igbvf_link_update(struct e1000_hw *hw);
-static void eth_igbvf_stats_get(struct rte_eth_dev *dev,
+static int eth_igbvf_stats_get(struct rte_eth_dev *dev,
 				struct rte_eth_stats *rte_stats);
 static int eth_igbvf_xstats_get(struct rte_eth_dev *dev,
 				struct rte_eth_xstat *xstats, unsigned n);
@@ -1168,7 +1168,8 @@ static int eth_igb_pci_remove(struct rte_pci_device *pci_dev)
 
 static struct rte_pci_driver rte_igb_pmd = {
 	.id_table = pci_id_igb_map,
-	.drv_flags = RTE_PCI_DRV_NEED_MAPPING | RTE_PCI_DRV_INTR_LSC,
+	.drv_flags = RTE_PCI_DRV_NEED_MAPPING | RTE_PCI_DRV_INTR_LSC |
+		     RTE_PCI_DRV_IOVA_AS_VA,
 	.probe = eth_igb_pci_probe,
 	.remove = eth_igb_pci_remove,
 };
@@ -1191,7 +1192,7 @@ static int eth_igbvf_pci_remove(struct rte_pci_device *pci_dev)
  */
 static struct rte_pci_driver rte_igbvf_pmd = {
 	.id_table = pci_id_igbvf_map,
-	.drv_flags = RTE_PCI_DRV_NEED_MAPPING,
+	.drv_flags = RTE_PCI_DRV_NEED_MAPPING | RTE_PCI_DRV_IOVA_AS_VA,
 	.probe = eth_igbvf_pci_probe,
 	.remove = eth_igbvf_pci_remove,
 };
@@ -1830,7 +1831,7 @@ igb_read_stats_registers(struct e1000_hw *hw, struct e1000_hw_stats *stats)
 	stats->tsctfc += E1000_READ_REG(hw, E1000_TSCTFC);
 }
 
-static void
+static int
 eth_igb_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *rte_stats)
 {
 	struct e1000_hw *hw = E1000_DEV_PRIVATE_TO_HW(dev->data->dev_private);
@@ -1840,7 +1841,7 @@ eth_igb_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *rte_stats)
 	igb_read_stats_registers(hw, stats);
 
 	if (rte_stats == NULL)
-		return;
+		return -EINVAL;
 
 	/* Rx Errors */
 	rte_stats->imissed = stats->mpc;
@@ -1855,6 +1856,7 @@ eth_igb_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *rte_stats)
 	rte_stats->opackets = stats->gptc;
 	rte_stats->ibytes   = stats->gorc;
 	rte_stats->obytes   = stats->gotc;
+	return 0;
 }
 
 static void
@@ -2095,7 +2097,7 @@ eth_igbvf_xstats_get(struct rte_eth_dev *dev, struct rte_eth_xstat *xstats,
 	return IGBVF_NB_XSTATS;
 }
 
-static void
+static int
 eth_igbvf_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *rte_stats)
 {
 	struct e1000_hw *hw = E1000_DEV_PRIVATE_TO_HW(dev->data->dev_private);
@@ -2105,12 +2107,13 @@ eth_igbvf_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *rte_stats)
 	igbvf_read_stats_registers(hw, hw_stats);
 
 	if (rte_stats == NULL)
-		return;
+		return -EINVAL;
 
 	rte_stats->ipackets = hw_stats->gprc;
 	rte_stats->ibytes = hw_stats->gorc;
 	rte_stats->opackets = hw_stats->gptc;
 	rte_stats->obytes = hw_stats->gotc;
+	return 0;
 }
 
 static void

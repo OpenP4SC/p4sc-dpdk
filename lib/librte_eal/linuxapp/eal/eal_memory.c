@@ -75,13 +75,6 @@
 
 #define PFN_MASK_SIZE	8
 
-#ifdef RTE_LIBRTE_XEN_DOM0
-int rte_xen_dom0_supported(void)
-{
-	return internal_config.xen_dom0_support;
-}
-#endif
-
 /**
  * @file
  * Huge page mapping under linux
@@ -105,10 +98,6 @@ test_phys_addrs_available(void)
 {
 	uint64_t tmp;
 	phys_addr_t physaddr;
-
-	/* For dom0, phys addresses can always be available */
-	if (rte_xen_dom0_supported())
-		return;
 
 	if (!rte_eal_has_hugepages()) {
 		RTE_LOG(ERR, EAL,
@@ -141,29 +130,6 @@ rte_mem_virt2phy(const void *virtaddr)
 
 	if (rte_eal_iova_mode() == RTE_IOVA_VA)
 		return (uintptr_t)virtaddr;
-
-	/* when using dom0, /proc/self/pagemap always returns 0, check in
-	 * dpdk memory by browsing the memsegs */
-	if (rte_xen_dom0_supported()) {
-		struct rte_mem_config *mcfg;
-		struct rte_memseg *memseg;
-		unsigned i;
-
-		mcfg = rte_eal_get_configuration()->mem_config;
-		for (i = 0; i < RTE_MAX_MEMSEG; i++) {
-			memseg = &mcfg->memseg[i];
-			if (memseg->addr == NULL)
-				break;
-			if (virtaddr > memseg->addr &&
-					virtaddr < RTE_PTR_ADD(memseg->addr,
-						memseg->len)) {
-				return memseg->phys_addr +
-					RTE_PTR_DIFF(virtaddr, memseg->addr);
-			}
-		}
-
-		return RTE_BAD_PHYS_ADDR;
-	}
 
 	/* Cannot parse /proc/self/pagemap, no need to log errors everywhere */
 	if (!phys_addrs_available)
@@ -719,6 +685,8 @@ create_shared_memory(const char *filename, const size_t mem_size)
 	}
 	retval = mmap(NULL, mem_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 	close(fd);
+	if (retval == MAP_FAILED)
+		return NULL;
 	return retval;
 }
 
@@ -1062,23 +1030,15 @@ rte_eal_hugepage_init(void)
 					strerror(errno));
 			return -1;
 		}
-		mcfg->memseg[0].phys_addr = RTE_BAD_PHYS_ADDR;
+		if (rte_eal_iova_mode() == RTE_IOVA_VA)
+			mcfg->memseg[0].phys_addr = (uintptr_t)addr;
+		else
+			mcfg->memseg[0].phys_addr = RTE_BAD_PHYS_ADDR;
 		mcfg->memseg[0].addr = addr;
 		mcfg->memseg[0].hugepage_sz = RTE_PGSIZE_4K;
 		mcfg->memseg[0].len = internal_config.memory;
 		mcfg->memseg[0].socket_id = 0;
 		return 0;
-	}
-
-/* check if app runs on Xen Dom0 */
-	if (internal_config.xen_dom0_support) {
-#ifdef RTE_LIBRTE_XEN_DOM0
-		/* use dom0_mm kernel driver to init memory */
-		if (rte_xen_dom0_memory_init() < 0)
-			return -1;
-		else
-			return 0;
-#endif
 	}
 
 	/* calculate total number of hugepages available. at this point we haven't
@@ -1402,17 +1362,6 @@ rte_eal_hugepage_attach(void)
 	}
 
 	test_phys_addrs_available();
-
-	if (internal_config.xen_dom0_support) {
-#ifdef RTE_LIBRTE_XEN_DOM0
-		if (rte_xen_dom0_memory_attach() < 0) {
-			RTE_LOG(ERR, EAL, "Failed to attach memory segments of primary "
-					"process\n");
-			return -1;
-		}
-		return 0;
-#endif
-	}
 
 	fd_zero = open("/dev/zero", O_RDONLY);
 	if (fd_zero < 0) {

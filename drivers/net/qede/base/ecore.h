@@ -29,9 +29,9 @@
 #include "mcp_public.h"
 
 #define ECORE_MAJOR_VERSION		8
-#define ECORE_MINOR_VERSION		18
-#define ECORE_REVISION_VERSION		7
-#define ECORE_ENGINEERING_VERSION	1
+#define ECORE_MINOR_VERSION		30
+#define ECORE_REVISION_VERSION		8
+#define ECORE_ENGINEERING_VERSION	0
 
 #define ECORE_VERSION							\
 	((ECORE_MAJOR_VERSION << 24) | (ECORE_MINOR_VERSION << 16) |	\
@@ -361,19 +361,23 @@ enum ecore_db_rec_exec {
 struct ecore_hw_info {
 	/* PCI personality */
 	enum ecore_pci_personality personality;
-#define ECORE_IS_RDMA_PERSONALITY(dev)			    \
-	((dev)->hw_info.personality == ECORE_PCI_ETH_ROCE ||  \
+#define ECORE_IS_RDMA_PERSONALITY(dev) \
+	((dev)->hw_info.personality == ECORE_PCI_ETH_ROCE || \
 	 (dev)->hw_info.personality == ECORE_PCI_ETH_IWARP || \
 	 (dev)->hw_info.personality == ECORE_PCI_ETH_RDMA)
-#define ECORE_IS_ROCE_PERSONALITY(dev)			   \
+#define ECORE_IS_ROCE_PERSONALITY(dev) \
 	((dev)->hw_info.personality == ECORE_PCI_ETH_ROCE || \
 	 (dev)->hw_info.personality == ECORE_PCI_ETH_RDMA)
-#define ECORE_IS_IWARP_PERSONALITY(dev)			    \
+#define ECORE_IS_IWARP_PERSONALITY(dev) \
 	((dev)->hw_info.personality == ECORE_PCI_ETH_IWARP || \
 	 (dev)->hw_info.personality == ECORE_PCI_ETH_RDMA)
-#define ECORE_IS_L2_PERSONALITY(dev)		      \
+#define ECORE_IS_L2_PERSONALITY(dev) \
 	((dev)->hw_info.personality == ECORE_PCI_ETH || \
 	 ECORE_IS_RDMA_PERSONALITY(dev))
+#define ECORE_IS_FCOE_PERSONALITY(dev) \
+	((dev)->hw_info.personality == ECORE_PCI_FCOE)
+#define ECORE_IS_ISCSI_PERSONALITY(dev) \
+	((dev)->hw_info.personality == ECORE_PCI_ISCSI)
 
 	/* Resource Allocation scheme results */
 	u32 resc_start[ECORE_MAX_RESC];
@@ -870,6 +874,8 @@ struct ecore_dev {
 						  : MAX_SB_PER_PATH_K2)
 #define NUM_OF_ENG_PFS(dev)	(ECORE_IS_BB(dev) ? MAX_NUM_PFS_BB \
 						  : MAX_NUM_PFS_K2)
+
+#define CRC8_TABLE_SIZE 256
 
 /**
  * @brief ecore_concrete_to_sw_fid - get the sw function id from

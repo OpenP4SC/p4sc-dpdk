@@ -463,6 +463,19 @@ extern int
 rte_cryptodev_get_dev_id(const char *name);
 
 /**
+ * Get the crypto device name given a device identifier.
+ *
+ * @param dev_id
+ *   The identifier of the device
+ *
+ * @return
+ *   - Returns crypto device name.
+ *   - Returns NULL if crypto device is not present.
+ */
+extern const char *
+rte_cryptodev_name_get(uint8_t dev_id);
+
+/**
  * Get the total number of crypto devices that have been successfully
  * initialised.
  *
@@ -1024,26 +1037,6 @@ int rte_cryptodev_driver_id_get(const char *name);
  *  The driver name or null if no driver found
  */
 const char *rte_cryptodev_driver_name_get(uint8_t driver_id);
-
-/**
- * @internal
- * Allocate Cryptodev driver.
- *
- * @param driver
- *   Pointer to rte_driver.
- * @return
- *  The driver type identifier
- */
-uint8_t rte_cryptodev_allocate_driver(const struct rte_driver *driver);
-
-
-#define RTE_PMD_REGISTER_CRYPTO_DRIVER(drv, driver_id)\
-RTE_INIT(init_ ##driver_id);\
-static void init_ ##driver_id(void)\
-{\
-	driver_id = rte_cryptodev_allocate_driver(&(drv).driver);\
-}
-
 
 #ifdef __cplusplus
 }

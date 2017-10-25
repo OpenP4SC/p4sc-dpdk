@@ -967,6 +967,14 @@ enum rte_flow_action_type {
 	 * See struct rte_flow_action_vf.
 	 */
 	RTE_FLOW_ACTION_TYPE_VF,
+
+	/**
+	 * Traffic metering and policing (MTR).
+	 *
+	 * See struct rte_flow_action_meter.
+	 * See file rte_mtr.h for MTR object configuration.
+	 */
+	RTE_FLOW_ACTION_TYPE_METER,
 };
 
 /**
@@ -1057,6 +1065,20 @@ struct rte_flow_action_vf {
 	uint32_t original:1; /**< Use original VF ID if possible. */
 	uint32_t reserved:31; /**< Reserved, must be zero. */
 	uint32_t id; /**< VF ID to redirect packets to. */
+};
+
+/**
+ * RTE_FLOW_ACTION_TYPE_METER
+ *
+ * Traffic metering and policing (MTR).
+ *
+ * Packets matched by items of this type can be either dropped or passed to the
+ * next item with their color set by the MTR object.
+ *
+ * Non-terminating by default.
+ */
+struct rte_flow_action_meter {
+	uint32_t mtr_id; /**< MTR object ID created with rte_mtr_create(). */
 };
 
 /**
@@ -1320,6 +1342,30 @@ rte_flow_query(uint16_t port_id,
  */
 int
 rte_flow_isolate(uint16_t port_id, int set, struct rte_flow_error *error);
+
+/**
+ * Initialize flow error structure.
+ *
+ * @param[out] error
+ *   Pointer to flow error structure (may be NULL).
+ * @param code
+ *   Related error code (rte_errno).
+ * @param type
+ *   Cause field and error types.
+ * @param cause
+ *   Object responsible for the error.
+ * @param message
+ *   Human-readable error message.
+ *
+ * @return
+ *   Negative error code (errno value) and rte_errno is set.
+ */
+int
+rte_flow_error_set(struct rte_flow_error *error,
+		   int code,
+		   enum rte_flow_error_type type,
+		   const void *cause,
+		   const char *message);
 
 /**
  * Generic flow representation.

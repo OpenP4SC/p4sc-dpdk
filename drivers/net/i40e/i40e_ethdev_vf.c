@@ -108,7 +108,7 @@ static void i40evf_dev_info_get(struct rte_eth_dev *dev,
 				struct rte_eth_dev_info *dev_info);
 static int i40evf_dev_link_update(struct rte_eth_dev *dev,
 				  int wait_to_complete);
-static void i40evf_dev_stats_get(struct rte_eth_dev *dev,
+static int i40evf_dev_stats_get(struct rte_eth_dev *dev,
 				struct rte_eth_stats *stats);
 static int i40evf_dev_xstats_get(struct rte_eth_dev *dev,
 				 struct rte_eth_xstat *xstats, unsigned n);
@@ -1111,9 +1111,29 @@ i40evf_enable_irq0(struct i40e_hw *hw)
 }
 
 static int
-i40evf_reset_vf(struct i40e_hw *hw)
+i40evf_check_vf_reset_done(struct i40e_hw *hw)
 {
 	int i, reset;
+
+	for (i = 0; i < MAX_RESET_WAIT_CNT; i++) {
+		reset = I40E_READ_REG(hw, I40E_VFGEN_RSTAT) &
+			I40E_VFGEN_RSTAT_VFR_STATE_MASK;
+		reset = reset >> I40E_VFGEN_RSTAT_VFR_STATE_SHIFT;
+		if (reset == VIRTCHNL_VFR_VFACTIVE ||
+		    reset == VIRTCHNL_VFR_COMPLETED)
+			break;
+		rte_delay_ms(50);
+	}
+
+	if (i >= MAX_RESET_WAIT_CNT)
+		return -1;
+
+	return 0;
+}
+static int
+i40evf_reset_vf(struct i40e_hw *hw)
+{
+	int ret;
 
 	if (i40e_vf_reset(hw) != I40E_SUCCESS) {
 		PMD_INIT_LOG(ERR, "Reset VF NIC failed");
@@ -1130,19 +1150,10 @@ i40evf_reset_vf(struct i40e_hw *hw)
 	  */
 	rte_delay_ms(200);
 
-	for (i = 0; i < MAX_RESET_WAIT_CNT; i++) {
-		reset = rd32(hw, I40E_VFGEN_RSTAT) &
-			I40E_VFGEN_RSTAT_VFR_STATE_MASK;
-		reset = reset >> I40E_VFGEN_RSTAT_VFR_STATE_SHIFT;
-		if (VIRTCHNL_VFR_COMPLETED == reset || VIRTCHNL_VFR_VFACTIVE == reset)
-			break;
-		else
-			rte_delay_ms(50);
-	}
-
-	if (i >= MAX_RESET_WAIT_CNT) {
-		PMD_INIT_LOG(ERR, "Reset VF NIC failed");
-		return -1;
+	ret = i40evf_check_vf_reset_done(hw);
+	if (ret) {
+		PMD_INIT_LOG(ERR, "VF is still resetting");
+		return ret;
 	}
 
 	return 0;
@@ -1164,6 +1175,10 @@ i40evf_init_vf(struct rte_eth_dev *dev)
 		PMD_INIT_LOG(ERR, "set_mac_type failed: %d", err);
 		goto err;
 	}
+
+	err = i40evf_check_vf_reset_done(hw);
+	if (err)
+		goto err;
 
 	i40e_init_adminq_parameter(hw);
 	err = i40e_init_adminq(hw);
@@ -1189,6 +1204,7 @@ i40evf_init_vf(struct rte_eth_dev *dev)
 		PMD_INIT_LOG(ERR, "init_adminq failed");
 		goto err;
 	}
+
 	vf->aq_resp = rte_zmalloc("vf_aq_resp", I40E_AQ_BUF_SZ, 0);
 	if (!vf->aq_resp) {
 		PMD_INIT_LOG(ERR, "unable to allocate vf_aq_resp memory");
@@ -1527,7 +1543,7 @@ static int eth_i40evf_pci_remove(struct rte_pci_device *pci_dev)
  */
 static struct rte_pci_driver rte_i40evf_pmd = {
 	.id_table = pci_id_i40evf_map,
-	.drv_flags = RTE_PCI_DRV_NEED_MAPPING,
+	.drv_flags = RTE_PCI_DRV_NEED_MAPPING | RTE_PCI_DRV_IOVA_AS_VA,
 	.probe = eth_i40evf_pci_probe,
 	.remove = eth_i40evf_pci_remove,
 };
@@ -2100,6 +2116,8 @@ i40evf_dev_link_update(struct rte_eth_dev *dev,
 	new_link.link_duplex = ETH_LINK_FULL_DUPLEX;
 	new_link.link_status = vf->link_up ? ETH_LINK_UP :
 					     ETH_LINK_DOWN;
+	new_link.link_autoneg =
+		dev->data->dev_conf.link_speeds & ETH_LINK_SPEED_FIXED;
 
 	i40evf_dev_atomic_write_link_status(dev, &new_link);
 
@@ -2230,7 +2248,7 @@ i40evf_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 	};
 }
 
-static void
+static int
 i40evf_dev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 {
 	int ret;
@@ -2253,6 +2271,7 @@ i40evf_dev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 	} else {
 		PMD_DRV_LOG(ERR, "Get statistics failed");
 	}
+	return ret;
 }
 
 static void

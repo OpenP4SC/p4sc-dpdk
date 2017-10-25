@@ -51,89 +51,309 @@
 #pragma GCC diagnostic error "-Wpedantic"
 #endif
 
+#include <rte_byteorder.h>
 #include <rte_common.h>
 #include <rte_errno.h>
 #include <rte_ethdev.h>
+#include <rte_flow.h>
 #include <rte_malloc.h>
 #include <rte_mbuf.h>
 #include <rte_mempool.h>
 
 #include "mlx4.h"
+#include "mlx4_flow.h"
 #include "mlx4_rxtx.h"
 #include "mlx4_utils.h"
+
+/**
+ * Historical RSS hash key.
+ *
+ * This used to be the default for mlx4 in Linux before v3.19 switched to
+ * generating random hash keys through netdev_rss_key_fill().
+ *
+ * It is used in this PMD for consistency with past DPDK releases but can
+ * now be overridden through user configuration.
+ *
+ * Note: this is not const to work around API quirks.
+ */
+uint8_t
+mlx4_rss_hash_key_default[MLX4_RSS_HASH_KEY_SIZE] = {
+	0x2c, 0xc6, 0x81, 0xd1,
+	0x5b, 0xdb, 0xf4, 0xf7,
+	0xfc, 0xa2, 0x83, 0x19,
+	0xdb, 0x1a, 0x3e, 0x94,
+	0x6b, 0x9e, 0x38, 0xd9,
+	0x2c, 0x9c, 0x03, 0xd1,
+	0xad, 0x99, 0x44, 0xa7,
+	0xd9, 0x56, 0x3d, 0x59,
+	0x06, 0x3c, 0x25, 0xf3,
+	0xfc, 0x1f, 0xdc, 0x2a,
+};
+
+/**
+ * Obtain a RSS context with specified properties.
+ *
+ * Used when creating a flow rule targeting one or several Rx queues.
+ *
+ * If a matching RSS context already exists, it is returned with its
+ * reference count incremented.
+ *
+ * @param priv
+ *   Pointer to private structure.
+ * @param fields
+ *   Fields for RSS processing (Verbs format).
+ * @param[in] key
+ *   Hash key to use (whose size is exactly MLX4_RSS_HASH_KEY_SIZE).
+ * @param queues
+ *   Number of target queues.
+ * @param[in] queue_id
+ *   Target queues.
+ *
+ * @return
+ *   Pointer to RSS context on success, NULL otherwise and rte_errno is set.
+ */
+struct mlx4_rss *
+mlx4_rss_get(struct priv *priv, uint64_t fields,
+	     uint8_t key[MLX4_RSS_HASH_KEY_SIZE],
+	     uint16_t queues, const uint16_t queue_id[])
+{
+	struct mlx4_rss *rss;
+	size_t queue_id_size = sizeof(queue_id[0]) * queues;
+
+	LIST_FOREACH(rss, &priv->rss, next)
+		if (fields == rss->fields &&
+		    queues == rss->queues &&
+		    !memcmp(key, rss->key, MLX4_RSS_HASH_KEY_SIZE) &&
+		    !memcmp(queue_id, rss->queue_id, queue_id_size)) {
+			++rss->refcnt;
+			return rss;
+		}
+	rss = rte_malloc(__func__, offsetof(struct mlx4_rss, queue_id) +
+			 queue_id_size, 0);
+	if (!rss)
+		goto error;
+	*rss = (struct mlx4_rss){
+		.priv = priv,
+		.refcnt = 1,
+		.usecnt = 0,
+		.qp = NULL,
+		.ind = NULL,
+		.fields = fields,
+		.queues = queues,
+	};
+	memcpy(rss->key, key, MLX4_RSS_HASH_KEY_SIZE);
+	memcpy(rss->queue_id, queue_id, queue_id_size);
+	LIST_INSERT_HEAD(&priv->rss, rss, next);
+	return rss;
+error:
+	rte_errno = ENOMEM;
+	return NULL;
+}
+
+/**
+ * Release a RSS context instance.
+ *
+ * Used when destroying a flow rule targeting one or several Rx queues.
+ *
+ * This function decrements the reference count of the context and destroys
+ * it after reaching 0. The context must have no users at this point; all
+ * prior calls to mlx4_rss_attach() must have been followed by matching
+ * calls to mlx4_rss_detach().
+ *
+ * @param rss
+ *   RSS context to release.
+ */
+void mlx4_rss_put(struct mlx4_rss *rss)
+{
+	assert(rss->refcnt);
+	if (--rss->refcnt)
+		return;
+	assert(!rss->usecnt);
+	assert(!rss->qp);
+	assert(!rss->ind);
+	LIST_REMOVE(rss, next);
+	rte_free(rss);
+}
+
+/**
+ * Attach a user to a RSS context instance.
+ *
+ * Used when the RSS QP and indirection table objects must be instantiated,
+ * that is, when a flow rule must be enabled.
+ *
+ * This function increments the usage count of the context.
+ *
+ * @param rss
+ *   RSS context to attach to.
+ */
+int mlx4_rss_attach(struct mlx4_rss *rss)
+{
+	assert(rss->refcnt);
+	if (rss->usecnt++) {
+		assert(rss->qp);
+		assert(rss->ind);
+		return 0;
+	}
+
+	struct ibv_wq *ind_tbl[rss->queues];
+	struct priv *priv = rss->priv;
+	const char *msg;
+	unsigned int i;
+	int ret;
+
+	if (!rte_is_power_of_2(RTE_DIM(ind_tbl))) {
+		msg = "number of RSS queues must be a power of two";
+		goto error;
+	}
+	for (i = 0; i != RTE_DIM(ind_tbl); ++i) {
+		uint16_t id = rss->queue_id[i];
+		struct rxq *rxq = NULL;
+
+		if (id < priv->dev->data->nb_rx_queues)
+			rxq = priv->dev->data->rx_queues[id];
+		if (!rxq) {
+			msg = "RSS target queue is not configured";
+			goto error;
+		}
+		ind_tbl[i] = rxq->wq;
+	}
+	rss->ind = ibv_create_rwq_ind_table
+		(priv->ctx,
+		 &(struct ibv_rwq_ind_table_init_attr){
+			.log_ind_tbl_size = rte_log2_u32(RTE_DIM(ind_tbl)),
+			.ind_tbl = ind_tbl,
+			.comp_mask = 0,
+		 });
+	if (!rss->ind) {
+		msg = "RSS indirection table creation failure";
+		goto error;
+	}
+	rss->qp = ibv_create_qp_ex
+		(priv->ctx,
+		 &(struct ibv_qp_init_attr_ex){
+			.comp_mask = (IBV_QP_INIT_ATTR_PD |
+				      IBV_QP_INIT_ATTR_RX_HASH |
+				      IBV_QP_INIT_ATTR_IND_TABLE),
+			.qp_type = IBV_QPT_RAW_PACKET,
+			.pd = priv->pd,
+			.rwq_ind_tbl = rss->ind,
+			.rx_hash_conf = {
+				.rx_hash_function = IBV_RX_HASH_FUNC_TOEPLITZ,
+				.rx_hash_key_len = MLX4_RSS_HASH_KEY_SIZE,
+				.rx_hash_key = rss->key,
+				.rx_hash_fields_mask = rss->fields,
+			},
+		 });
+	if (!rss->qp) {
+		msg = "RSS hash QP creation failure";
+		goto error;
+	}
+	ret = ibv_modify_qp
+		(rss->qp,
+		 &(struct ibv_qp_attr){
+			.qp_state = IBV_QPS_INIT,
+			.port_num = priv->port,
+		 },
+		 IBV_QP_STATE | IBV_QP_PORT);
+	if (ret) {
+		msg = "failed to switch RSS hash QP to INIT state";
+		goto error;
+	}
+	ret = ibv_modify_qp
+		(rss->qp,
+		 &(struct ibv_qp_attr){
+			.qp_state = IBV_QPS_RTR,
+		 },
+		 IBV_QP_STATE);
+	if (ret) {
+		msg = "failed to switch RSS hash QP to RTR state";
+		goto error;
+	}
+	return 0;
+error:
+	ERROR("mlx4: %s", msg);
+	--rss->usecnt;
+	rte_errno = EINVAL;
+	return -rte_errno;
+}
+
+/**
+ * Detach a user from a RSS context instance.
+ *
+ * Used when disabling (not destroying) a flow rule.
+ *
+ * This function decrements the usage count of the context and destroys
+ * usage resources after reaching 0.
+ *
+ * @param rss
+ *   RSS context to detach from.
+ */
+void mlx4_rss_detach(struct mlx4_rss *rss)
+{
+	assert(rss->refcnt);
+	assert(rss->qp);
+	assert(rss->ind);
+	if (--rss->usecnt)
+		return;
+	claim_zero(ibv_destroy_qp(rss->qp));
+	rss->qp = NULL;
+	claim_zero(ibv_destroy_rwq_ind_table(rss->ind));
+	rss->ind = NULL;
+}
 
 /**
  * Allocate Rx queue elements.
  *
  * @param rxq
  *   Pointer to Rx queue structure.
- * @param elts_n
- *   Number of elements to allocate.
  *
  * @return
  *   0 on success, negative errno value otherwise and rte_errno is set.
  */
 static int
-mlx4_rxq_alloc_elts(struct rxq *rxq, unsigned int elts_n)
+mlx4_rxq_alloc_elts(struct rxq *rxq)
 {
+	const uint32_t elts_n = 1 << rxq->elts_n;
+	const uint32_t sges_n = 1 << rxq->sges_n;
+	struct rte_mbuf *(*elts)[elts_n] = rxq->elts;
 	unsigned int i;
-	struct rxq_elt (*elts)[elts_n] =
-		rte_calloc_socket("RXQ elements", 1, sizeof(*elts), 0,
-				  rxq->socket);
 
-	if (elts == NULL) {
-		rte_errno = ENOMEM;
-		ERROR("%p: can't allocate packets array", (void *)rxq);
-		goto error;
-	}
-	/* For each WR (packet). */
-	for (i = 0; (i != elts_n); ++i) {
-		struct rxq_elt *elt = &(*elts)[i];
-		struct ibv_recv_wr *wr = &elt->wr;
-		struct ibv_sge *sge = &(*elts)[i].sge;
+	assert(rte_is_power_of_2(elts_n));
+	for (i = 0; i != RTE_DIM(*elts); ++i) {
+		volatile struct mlx4_wqe_data_seg *scat = &(*rxq->wqes)[i];
 		struct rte_mbuf *buf = rte_pktmbuf_alloc(rxq->mp);
 
 		if (buf == NULL) {
+			while (i--) {
+				rte_pktmbuf_free_seg((*elts)[i]);
+				(*elts)[i] = NULL;
+			}
 			rte_errno = ENOMEM;
-			ERROR("%p: empty mbuf pool", (void *)rxq);
-			goto error;
+			return -rte_errno;
 		}
-		elt->buf = buf;
-		wr->next = &(*elts)[(i + 1)].wr;
-		wr->sg_list = sge;
-		wr->num_sge = 1;
 		/* Headroom is reserved by rte_pktmbuf_alloc(). */
 		assert(buf->data_off == RTE_PKTMBUF_HEADROOM);
 		/* Buffer is supposed to be empty. */
 		assert(rte_pktmbuf_data_len(buf) == 0);
 		assert(rte_pktmbuf_pkt_len(buf) == 0);
-		/* sge->addr must be able to store a pointer. */
-		assert(sizeof(sge->addr) >= sizeof(uintptr_t));
-		/* SGE keeps its headroom. */
-		sge->addr = (uintptr_t)
-			((uint8_t *)buf->buf_addr + RTE_PKTMBUF_HEADROOM);
-		sge->length = (buf->buf_len - RTE_PKTMBUF_HEADROOM);
-		sge->lkey = rxq->mr->lkey;
-		/* Redundant check for tailroom. */
-		assert(sge->length == rte_pktmbuf_tailroom(buf));
+		/* Only the first segment keeps headroom. */
+		if (i % sges_n)
+			buf->data_off = 0;
+		buf->port = rxq->port_id;
+		buf->data_len = rte_pktmbuf_tailroom(buf);
+		buf->pkt_len = rte_pktmbuf_tailroom(buf);
+		buf->nb_segs = 1;
+		*scat = (struct mlx4_wqe_data_seg){
+			.addr = rte_cpu_to_be_64(rte_pktmbuf_mtod(buf,
+								  uintptr_t)),
+			.byte_count = rte_cpu_to_be_32(buf->data_len),
+			.lkey = rte_cpu_to_be_32(rxq->mr->lkey),
+		};
+		(*elts)[i] = buf;
 	}
-	/* The last WR pointer must be NULL. */
-	(*elts)[(i - 1)].wr.next = NULL;
-	DEBUG("%p: allocated and configured %u single-segment WRs",
-	      (void *)rxq, elts_n);
-	rxq->elts_n = elts_n;
-	rxq->elts_head = 0;
-	rxq->elts = elts;
+	DEBUG("%p: allocated and configured %u segments (max %u packets)",
+	      (void *)rxq, elts_n, elts_n / sges_n);
 	return 0;
-error:
-	if (elts != NULL) {
-		for (i = 0; (i != RTE_DIM(*elts)); ++i)
-			rte_pktmbuf_free_seg((*elts)[i].buf);
-		rte_free(elts);
-	}
-	DEBUG("%p: failed, freed everything", (void *)rxq);
-	assert(rte_errno > 0);
-	return -rte_errno;
 }
 
 /**
@@ -146,236 +366,15 @@ static void
 mlx4_rxq_free_elts(struct rxq *rxq)
 {
 	unsigned int i;
-	unsigned int elts_n = rxq->elts_n;
-	struct rxq_elt (*elts)[elts_n] = rxq->elts;
+	struct rte_mbuf *(*elts)[1 << rxq->elts_n] = rxq->elts;
 
-	DEBUG("%p: freeing WRs", (void *)rxq);
-	rxq->elts_n = 0;
-	rxq->elts = NULL;
-	if (elts == NULL)
-		return;
-	for (i = 0; (i != RTE_DIM(*elts)); ++i)
-		rte_pktmbuf_free_seg((*elts)[i].buf);
-	rte_free(elts);
-}
-
-/**
- * Clean up a Rx queue.
- *
- * Destroy objects, free allocated memory and reset the structure for reuse.
- *
- * @param rxq
- *   Pointer to Rx queue structure.
- */
-void
-mlx4_rxq_cleanup(struct rxq *rxq)
-{
-	DEBUG("cleaning up %p", (void *)rxq);
-	mlx4_rxq_free_elts(rxq);
-	if (rxq->qp != NULL)
-		claim_zero(ibv_destroy_qp(rxq->qp));
-	if (rxq->cq != NULL)
-		claim_zero(ibv_destroy_cq(rxq->cq));
-	if (rxq->channel != NULL)
-		claim_zero(ibv_destroy_comp_channel(rxq->channel));
-	if (rxq->mr != NULL)
-		claim_zero(ibv_dereg_mr(rxq->mr));
-	memset(rxq, 0, sizeof(*rxq));
-}
-
-/**
- * Allocate a Queue Pair.
- * Optionally setup inline receive if supported.
- *
- * @param priv
- *   Pointer to private structure.
- * @param cq
- *   Completion queue to associate with QP.
- * @param desc
- *   Number of descriptors in QP (hint only).
- *
- * @return
- *   QP pointer or NULL in case of error and rte_errno is set.
- */
-static struct ibv_qp *
-mlx4_rxq_setup_qp(struct priv *priv, struct ibv_cq *cq, uint16_t desc)
-{
-	struct ibv_qp *qp;
-	struct ibv_qp_init_attr attr = {
-		/* CQ to be associated with the send queue. */
-		.send_cq = cq,
-		/* CQ to be associated with the receive queue. */
-		.recv_cq = cq,
-		.cap = {
-			/* Max number of outstanding WRs. */
-			.max_recv_wr = ((priv->device_attr.max_qp_wr < desc) ?
-					priv->device_attr.max_qp_wr :
-					desc),
-			/* Max number of scatter/gather elements in a WR. */
-			.max_recv_sge = 1,
-		},
-		.qp_type = IBV_QPT_RAW_PACKET,
-	};
-
-	qp = ibv_create_qp(priv->pd, &attr);
-	if (!qp)
-		rte_errno = errno ? errno : EINVAL;
-	return qp;
-}
-
-/**
- * Configure a Rx queue.
- *
- * @param dev
- *   Pointer to Ethernet device structure.
- * @param rxq
- *   Pointer to Rx queue structure.
- * @param desc
- *   Number of descriptors to configure in queue.
- * @param socket
- *   NUMA socket on which memory must be allocated.
- * @param[in] conf
- *   Thresholds parameters.
- * @param mp
- *   Memory pool for buffer allocations.
- *
- * @return
- *   0 on success, negative errno value otherwise and rte_errno is set.
- */
-static int
-mlx4_rxq_setup(struct rte_eth_dev *dev, struct rxq *rxq, uint16_t desc,
-	       unsigned int socket, const struct rte_eth_rxconf *conf,
-	       struct rte_mempool *mp)
-{
-	struct priv *priv = dev->data->dev_private;
-	struct rxq tmpl = {
-		.priv = priv,
-		.mp = mp,
-		.socket = socket
-	};
-	struct ibv_qp_attr mod;
-	struct ibv_recv_wr *bad_wr;
-	unsigned int mb_len;
-	int ret;
-
-	(void)conf; /* Thresholds configuration (ignored). */
-	mb_len = rte_pktmbuf_data_room_size(mp);
-	if (desc == 0) {
-		rte_errno = EINVAL;
-		ERROR("%p: invalid number of Rx descriptors", (void *)dev);
-		goto error;
+	DEBUG("%p: freeing Rx queue elements", (void *)rxq);
+	for (i = 0; (i != RTE_DIM(*elts)); ++i) {
+		if (!(*elts)[i])
+			continue;
+		rte_pktmbuf_free_seg((*elts)[i]);
+		(*elts)[i] = NULL;
 	}
-	/* Enable scattered packets support for this queue if necessary. */
-	assert(mb_len >= RTE_PKTMBUF_HEADROOM);
-	if (dev->data->dev_conf.rxmode.max_rx_pkt_len <=
-	    (mb_len - RTE_PKTMBUF_HEADROOM)) {
-		;
-	} else if (dev->data->dev_conf.rxmode.enable_scatter) {
-		WARN("%p: scattered mode has been requested but is"
-		     " not supported, this may lead to packet loss",
-		     (void *)dev);
-	} else {
-		WARN("%p: the requested maximum Rx packet size (%u) is"
-		     " larger than a single mbuf (%u) and scattered"
-		     " mode has not been requested",
-		     (void *)dev,
-		     dev->data->dev_conf.rxmode.max_rx_pkt_len,
-		     mb_len - RTE_PKTMBUF_HEADROOM);
-	}
-	/* Use the entire Rx mempool as the memory region. */
-	tmpl.mr = mlx4_mp2mr(priv->pd, mp);
-	if (tmpl.mr == NULL) {
-		rte_errno = EINVAL;
-		ERROR("%p: MR creation failure: %s",
-		      (void *)dev, strerror(rte_errno));
-		goto error;
-	}
-	if (dev->data->dev_conf.intr_conf.rxq) {
-		tmpl.channel = ibv_create_comp_channel(priv->ctx);
-		if (tmpl.channel == NULL) {
-			rte_errno = ENOMEM;
-			ERROR("%p: Rx interrupt completion channel creation"
-			      " failure: %s",
-			      (void *)dev, strerror(rte_errno));
-			goto error;
-		}
-		if (mlx4_fd_set_non_blocking(tmpl.channel->fd) < 0) {
-			ERROR("%p: unable to make Rx interrupt completion"
-			      " channel non-blocking: %s",
-			      (void *)dev, strerror(rte_errno));
-			goto error;
-		}
-	}
-	tmpl.cq = ibv_create_cq(priv->ctx, desc, NULL, tmpl.channel, 0);
-	if (tmpl.cq == NULL) {
-		rte_errno = ENOMEM;
-		ERROR("%p: CQ creation failure: %s",
-		      (void *)dev, strerror(rte_errno));
-		goto error;
-	}
-	DEBUG("priv->device_attr.max_qp_wr is %d",
-	      priv->device_attr.max_qp_wr);
-	DEBUG("priv->device_attr.max_sge is %d",
-	      priv->device_attr.max_sge);
-	tmpl.qp = mlx4_rxq_setup_qp(priv, tmpl.cq, desc);
-	if (tmpl.qp == NULL) {
-		ERROR("%p: QP creation failure: %s",
-		      (void *)dev, strerror(rte_errno));
-		goto error;
-	}
-	mod = (struct ibv_qp_attr){
-		/* Move the QP to this state. */
-		.qp_state = IBV_QPS_INIT,
-		/* Primary port number. */
-		.port_num = priv->port
-	};
-	ret = ibv_modify_qp(tmpl.qp, &mod, IBV_QP_STATE | IBV_QP_PORT);
-	if (ret) {
-		rte_errno = ret;
-		ERROR("%p: QP state to IBV_QPS_INIT failed: %s",
-		      (void *)dev, strerror(rte_errno));
-		goto error;
-	}
-	ret = mlx4_rxq_alloc_elts(&tmpl, desc);
-	if (ret) {
-		ERROR("%p: RXQ allocation failed: %s",
-		      (void *)dev, strerror(rte_errno));
-		goto error;
-	}
-	ret = ibv_post_recv(tmpl.qp, &(*tmpl.elts)[0].wr, &bad_wr);
-	if (ret) {
-		rte_errno = ret;
-		ERROR("%p: ibv_post_recv() failed for WR %p: %s",
-		      (void *)dev,
-		      (void *)bad_wr,
-		      strerror(rte_errno));
-		goto error;
-	}
-	mod = (struct ibv_qp_attr){
-		.qp_state = IBV_QPS_RTR
-	};
-	ret = ibv_modify_qp(tmpl.qp, &mod, IBV_QP_STATE);
-	if (ret) {
-		rte_errno = ret;
-		ERROR("%p: QP state to IBV_QPS_RTR failed: %s",
-		      (void *)dev, strerror(rte_errno));
-		goto error;
-	}
-	/* Save port ID. */
-	tmpl.port_id = dev->data->port_id;
-	DEBUG("%p: RTE port ID: %u", (void *)rxq, tmpl.port_id);
-	/* Clean up rxq in case we're reinitializing it. */
-	DEBUG("%p: cleaning-up old rxq just in case", (void *)rxq);
-	mlx4_rxq_cleanup(rxq);
-	*rxq = tmpl;
-	DEBUG("%p: rxq updated with %p", (void *)rxq, (void *)&tmpl);
-	return 0;
-error:
-	ret = rte_errno;
-	mlx4_rxq_cleanup(&tmpl);
-	rte_errno = ret;
-	assert(rte_errno > 0);
-	return -rte_errno;
 }
 
 /**
@@ -403,9 +402,28 @@ mlx4_rx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 		    struct rte_mempool *mp)
 {
 	struct priv *priv = dev->data->dev_private;
-	struct rxq *rxq = dev->data->rx_queues[idx];
+	struct mlx4dv_obj mlxdv;
+	struct mlx4dv_rwq dv_rwq;
+	struct mlx4dv_cq dv_cq;
+	uint32_t mb_len = rte_pktmbuf_data_room_size(mp);
+	struct rte_mbuf *(*elts)[rte_align32pow2(desc)];
+	struct rte_flow_error error;
+	struct rxq *rxq;
+	struct mlx4_malloc_vec vec[] = {
+		{
+			.align = RTE_CACHE_LINE_SIZE,
+			.size = sizeof(*rxq),
+			.addr = (void **)&rxq,
+		},
+		{
+			.align = RTE_CACHE_LINE_SIZE,
+			.size = sizeof(*elts),
+			.addr = (void **)&elts,
+		},
+	};
 	int ret;
 
+	(void)conf; /* Thresholds configuration (ignored). */
 	DEBUG("%p: configuring queue %u for %u descriptors",
 	      (void *)dev, idx, desc);
 	if (idx >= dev->data->nb_rx_queues) {
@@ -414,38 +432,203 @@ mlx4_rx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 		      (void *)dev, idx, dev->data->nb_rx_queues);
 		return -rte_errno;
 	}
-	if (rxq != NULL) {
-		DEBUG("%p: reusing already allocated queue index %u (%p)",
-		      (void *)dev, idx, (void *)rxq);
-		if (priv->started) {
-			rte_errno = EEXIST;
-			return -rte_errno;
+	rxq = dev->data->rx_queues[idx];
+	if (rxq) {
+		rte_errno = EEXIST;
+		ERROR("%p: Rx queue %u already configured, release it first",
+		      (void *)dev, idx);
+		return -rte_errno;
+	}
+	if (!desc) {
+		rte_errno = EINVAL;
+		ERROR("%p: invalid number of Rx descriptors", (void *)dev);
+		return -rte_errno;
+	}
+	if (desc != RTE_DIM(*elts)) {
+		desc = RTE_DIM(*elts);
+		WARN("%p: increased number of descriptors in Rx queue %u"
+		     " to the next power of two (%u)",
+		     (void *)dev, idx, desc);
+	}
+	/* Allocate and initialize Rx queue. */
+	mlx4_zmallocv_socket("RXQ", vec, RTE_DIM(vec), socket);
+	if (!rxq) {
+		ERROR("%p: unable to allocate queue index %u",
+		      (void *)dev, idx);
+		return -rte_errno;
+	}
+	*rxq = (struct rxq){
+		.priv = priv,
+		.mp = mp,
+		.port_id = dev->data->port_id,
+		.sges_n = 0,
+		.elts_n = rte_log2_u32(desc),
+		.elts = elts,
+		/* Toggle Rx checksum offload if hardware supports it. */
+		.csum = (priv->hw_csum &&
+			 dev->data->dev_conf.rxmode.hw_ip_checksum),
+		.csum_l2tun = (priv->hw_csum_l2tun &&
+			       dev->data->dev_conf.rxmode.hw_ip_checksum),
+		.stats = {
+			.idx = idx,
+		},
+		.socket = socket,
+	};
+	/* Enable scattered packets support for this queue if necessary. */
+	assert(mb_len >= RTE_PKTMBUF_HEADROOM);
+	if (dev->data->dev_conf.rxmode.max_rx_pkt_len <=
+	    (mb_len - RTE_PKTMBUF_HEADROOM)) {
+		;
+	} else if (dev->data->dev_conf.rxmode.enable_scatter) {
+		uint32_t size =
+			RTE_PKTMBUF_HEADROOM +
+			dev->data->dev_conf.rxmode.max_rx_pkt_len;
+		uint32_t sges_n;
+
+		/*
+		 * Determine the number of SGEs needed for a full packet
+		 * and round it to the next power of two.
+		 */
+		sges_n = rte_log2_u32((size / mb_len) + !!(size % mb_len));
+		rxq->sges_n = sges_n;
+		/* Make sure sges_n did not overflow. */
+		size = mb_len * (1 << rxq->sges_n);
+		size -= RTE_PKTMBUF_HEADROOM;
+		if (size < dev->data->dev_conf.rxmode.max_rx_pkt_len) {
+			rte_errno = EOVERFLOW;
+			ERROR("%p: too many SGEs (%u) needed to handle"
+			      " requested maximum packet size %u",
+			      (void *)dev,
+			      1 << sges_n,
+			      dev->data->dev_conf.rxmode.max_rx_pkt_len);
+			goto error;
 		}
-		dev->data->rx_queues[idx] = NULL;
-		if (idx == 0)
-			mlx4_mac_addr_del(priv);
-		mlx4_rxq_cleanup(rxq);
 	} else {
-		rxq = rte_calloc_socket("RXQ", 1, sizeof(*rxq), 0, socket);
-		if (rxq == NULL) {
+		WARN("%p: the requested maximum Rx packet size (%u) is"
+		     " larger than a single mbuf (%u) and scattered"
+		     " mode has not been requested",
+		     (void *)dev,
+		     dev->data->dev_conf.rxmode.max_rx_pkt_len,
+		     mb_len - RTE_PKTMBUF_HEADROOM);
+	}
+	DEBUG("%p: maximum number of segments per packet: %u",
+	      (void *)dev, 1 << rxq->sges_n);
+	if (desc % (1 << rxq->sges_n)) {
+		rte_errno = EINVAL;
+		ERROR("%p: number of Rx queue descriptors (%u) is not a"
+		      " multiple of maximum segments per packet (%u)",
+		      (void *)dev,
+		      desc,
+		      1 << rxq->sges_n);
+		goto error;
+	}
+	/* Use the entire Rx mempool as the memory region. */
+	rxq->mr = mlx4_mp2mr(priv->pd, mp);
+	if (!rxq->mr) {
+		rte_errno = EINVAL;
+		ERROR("%p: MR creation failure: %s",
+		      (void *)dev, strerror(rte_errno));
+		goto error;
+	}
+	if (dev->data->dev_conf.intr_conf.rxq) {
+		rxq->channel = ibv_create_comp_channel(priv->ctx);
+		if (rxq->channel == NULL) {
 			rte_errno = ENOMEM;
-			ERROR("%p: unable to allocate queue index %u",
-			      (void *)dev, idx);
-			return -rte_errno;
+			ERROR("%p: Rx interrupt completion channel creation"
+			      " failure: %s",
+			      (void *)dev, strerror(rte_errno));
+			goto error;
+		}
+		if (mlx4_fd_set_non_blocking(rxq->channel->fd) < 0) {
+			ERROR("%p: unable to make Rx interrupt completion"
+			      " channel non-blocking: %s",
+			      (void *)dev, strerror(rte_errno));
+			goto error;
 		}
 	}
-	ret = mlx4_rxq_setup(dev, rxq, desc, socket, conf, mp);
-	if (ret) {
-		rte_free(rxq);
-	} else {
-		rxq->stats.idx = idx;
-		DEBUG("%p: adding Rx queue %p to list",
-		      (void *)dev, (void *)rxq);
-		dev->data->rx_queues[idx] = rxq;
-		/* Update receive callback. */
-		dev->rx_pkt_burst = mlx4_rx_burst;
+	rxq->cq = ibv_create_cq(priv->ctx, desc >> rxq->sges_n, NULL,
+				rxq->channel, 0);
+	if (!rxq->cq) {
+		rte_errno = ENOMEM;
+		ERROR("%p: CQ creation failure: %s",
+		      (void *)dev, strerror(rte_errno));
+		goto error;
 	}
-	return ret;
+	rxq->wq = ibv_create_wq
+		(priv->ctx,
+		 &(struct ibv_wq_init_attr){
+			.wq_type = IBV_WQT_RQ,
+			.max_wr = desc >> rxq->sges_n,
+			.max_sge = 1 << rxq->sges_n,
+			.pd = priv->pd,
+			.cq = rxq->cq,
+		 });
+	if (!rxq->wq) {
+		rte_errno = errno ? errno : EINVAL;
+		ERROR("%p: WQ creation failure: %s",
+		      (void *)dev, strerror(rte_errno));
+		goto error;
+	}
+	ret = ibv_modify_wq
+		(rxq->wq,
+		 &(struct ibv_wq_attr){
+			.attr_mask = IBV_WQ_ATTR_STATE,
+			.wq_state = IBV_WQS_RDY,
+		 });
+	if (ret) {
+		rte_errno = ret;
+		ERROR("%p: WQ state to IBV_WPS_RDY failed: %s",
+		      (void *)dev, strerror(rte_errno));
+		goto error;
+	}
+	/* Retrieve device queue information. */
+	mlxdv.cq.in = rxq->cq;
+	mlxdv.cq.out = &dv_cq;
+	mlxdv.rwq.in = rxq->wq;
+	mlxdv.rwq.out = &dv_rwq;
+	ret = mlx4dv_init_obj(&mlxdv, MLX4DV_OBJ_RWQ | MLX4DV_OBJ_CQ);
+	if (ret) {
+		rte_errno = EINVAL;
+		ERROR("%p: failed to obtain device information", (void *)dev);
+		goto error;
+	}
+	rxq->wqes =
+		(volatile struct mlx4_wqe_data_seg (*)[])
+		((uintptr_t)dv_rwq.buf.buf + dv_rwq.rq.offset);
+	rxq->rq_db = dv_rwq.rdb;
+	rxq->rq_ci = 0;
+	rxq->mcq.buf = dv_cq.buf.buf;
+	rxq->mcq.cqe_cnt = dv_cq.cqe_cnt;
+	rxq->mcq.set_ci_db = dv_cq.set_ci_db;
+	rxq->mcq.cqe_64 = (dv_cq.cqe_size & 64) ? 1 : 0;
+	ret = mlx4_rxq_alloc_elts(rxq);
+	if (ret) {
+		ERROR("%p: RXQ allocation failed: %s",
+		      (void *)dev, strerror(rte_errno));
+		goto error;
+	}
+	DEBUG("%p: adding Rx queue %p to list", (void *)dev, (void *)rxq);
+	dev->data->rx_queues[idx] = rxq;
+	/* Enable associated flows. */
+	ret = mlx4_flow_sync(priv, &error);
+	if (!ret) {
+		/* Update doorbell counter. */
+		rxq->rq_ci = desc >> rxq->sges_n;
+		rte_wmb();
+		*rxq->rq_db = rte_cpu_to_be_32(rxq->rq_ci);
+		return 0;
+	}
+	ERROR("cannot re-attach flow rules to queue %u"
+	      " (code %d, \"%s\"), flow error type %d, cause %p, message: %s",
+	      idx, -ret, strerror(-ret), error.type, error.cause,
+	      error.message ? error.message : "(unspecified)");
+error:
+	dev->data->rx_queues[idx] = NULL;
+	ret = rte_errno;
+	mlx4_rx_queue_release(rxq);
+	rte_errno = ret;
+	assert(rte_errno > 0);
+	return -rte_errno;
 }
 
 /**
@@ -469,111 +652,17 @@ mlx4_rx_queue_release(void *dpdk_rxq)
 			DEBUG("%p: removing Rx queue %p from list",
 			      (void *)priv->dev, (void *)rxq);
 			priv->dev->data->rx_queues[i] = NULL;
-			if (i == 0)
-				mlx4_mac_addr_del(priv);
 			break;
 		}
-	mlx4_rxq_cleanup(rxq);
+	mlx4_flow_sync(priv, NULL);
+	mlx4_rxq_free_elts(rxq);
+	if (rxq->wq)
+		claim_zero(ibv_destroy_wq(rxq->wq));
+	if (rxq->cq)
+		claim_zero(ibv_destroy_cq(rxq->cq));
+	if (rxq->channel)
+		claim_zero(ibv_destroy_comp_channel(rxq->channel));
+	if (rxq->mr)
+		claim_zero(ibv_dereg_mr(rxq->mr));
 	rte_free(rxq);
-}
-
-/**
- * Unregister a MAC address.
- *
- * @param priv
- *   Pointer to private structure.
- */
-void
-mlx4_mac_addr_del(struct priv *priv)
-{
-#ifndef NDEBUG
-	uint8_t (*mac)[ETHER_ADDR_LEN] = &priv->mac.addr_bytes;
-#endif
-
-	if (!priv->mac_flow)
-		return;
-	DEBUG("%p: removing MAC address %02x:%02x:%02x:%02x:%02x:%02x",
-	      (void *)priv,
-	      (*mac)[0], (*mac)[1], (*mac)[2], (*mac)[3], (*mac)[4], (*mac)[5]);
-	claim_zero(ibv_destroy_flow(priv->mac_flow));
-	priv->mac_flow = NULL;
-}
-
-/**
- * Register a MAC address.
- *
- * The MAC address is registered in queue 0.
- *
- * @param priv
- *   Pointer to private structure.
- *
- * @return
- *   0 on success, negative errno value otherwise and rte_errno is set.
- */
-int
-mlx4_mac_addr_add(struct priv *priv)
-{
-	uint8_t (*mac)[ETHER_ADDR_LEN] = &priv->mac.addr_bytes;
-	struct rxq *rxq;
-	struct ibv_flow *flow;
-
-	/* If device isn't started, this is all we need to do. */
-	if (!priv->started)
-		return 0;
-	if (priv->isolated)
-		return 0;
-	if (priv->dev->data->rx_queues && priv->dev->data->rx_queues[0])
-		rxq = priv->dev->data->rx_queues[0];
-	else
-		return 0;
-
-	/* Allocate flow specification on the stack. */
-	struct __attribute__((packed)) {
-		struct ibv_flow_attr attr;
-		struct ibv_flow_spec_eth spec;
-	} data;
-	struct ibv_flow_attr *attr = &data.attr;
-	struct ibv_flow_spec_eth *spec = &data.spec;
-
-	if (priv->mac_flow)
-		mlx4_mac_addr_del(priv);
-	/*
-	 * No padding must be inserted by the compiler between attr and spec.
-	 * This layout is expected by libibverbs.
-	 */
-	assert(((uint8_t *)attr + sizeof(*attr)) == (uint8_t *)spec);
-	*attr = (struct ibv_flow_attr){
-		.type = IBV_FLOW_ATTR_NORMAL,
-		.priority = 3,
-		.num_of_specs = 1,
-		.port = priv->port,
-		.flags = 0
-	};
-	*spec = (struct ibv_flow_spec_eth){
-		.type = IBV_FLOW_SPEC_ETH,
-		.size = sizeof(*spec),
-		.val = {
-			.dst_mac = {
-				(*mac)[0], (*mac)[1], (*mac)[2],
-				(*mac)[3], (*mac)[4], (*mac)[5]
-			},
-		},
-		.mask = {
-			.dst_mac = "\xff\xff\xff\xff\xff\xff",
-		}
-	};
-	DEBUG("%p: adding MAC address %02x:%02x:%02x:%02x:%02x:%02x",
-	      (void *)priv,
-	      (*mac)[0], (*mac)[1], (*mac)[2], (*mac)[3], (*mac)[4], (*mac)[5]);
-	/* Create related flow. */
-	flow = ibv_create_flow(rxq->qp, attr);
-	if (flow == NULL) {
-		rte_errno = errno ? errno : EINVAL;
-		ERROR("%p: flow configuration failed, errno=%d: %s",
-		      (void *)rxq, rte_errno, strerror(errno));
-		return -rte_errno;
-	}
-	assert(priv->mac_flow == NULL);
-	priv->mac_flow = flow;
-	return 0;
 }

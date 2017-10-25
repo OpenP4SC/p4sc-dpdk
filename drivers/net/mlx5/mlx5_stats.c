@@ -318,7 +318,7 @@ priv_xstats_reset(struct priv *priv)
  * @param[out] stats
  *   Stats structure output buffer.
  */
-void
+int
 mlx5_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 {
 	struct priv *priv = mlx5_get_priv(dev);
@@ -329,7 +329,7 @@ mlx5_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 	priv_lock(priv);
 	/* Add software counters. */
 	for (i = 0; (i != priv->rxqs_n); ++i) {
-		struct rxq *rxq = (*priv->rxqs)[i];
+		struct mlx5_rxq_data *rxq = (*priv->rxqs)[i];
 
 		if (rxq == NULL)
 			continue;
@@ -350,7 +350,7 @@ mlx5_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 		tmp.rx_nombuf += rxq->stats.rx_nombuf;
 	}
 	for (i = 0; (i != priv->txqs_n); ++i) {
-		struct txq *txq = (*priv->txqs)[i];
+		struct mlx5_txq_data *txq = (*priv->txqs)[i];
 
 		if (txq == NULL)
 			continue;
@@ -373,6 +373,7 @@ mlx5_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 #endif
 	*stats = tmp;
 	priv_unlock(priv);
+	return 0;
 }
 
 /**

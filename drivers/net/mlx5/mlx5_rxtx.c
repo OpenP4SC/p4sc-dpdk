@@ -65,11 +65,11 @@ static __rte_always_inline uint32_t
 rxq_cq_to_pkt_type(volatile struct mlx5_cqe *cqe);
 
 static __rte_always_inline int
-mlx5_rx_poll_len(struct rxq *rxq, volatile struct mlx5_cqe *cqe,
+mlx5_rx_poll_len(struct mlx5_rxq_data *rxq, volatile struct mlx5_cqe *cqe,
 		 uint16_t cqe_cnt, uint32_t *rss_hash);
 
 static __rte_always_inline uint32_t
-rxq_cq_to_ol_flags(struct rxq *rxq, volatile struct mlx5_cqe *cqe);
+rxq_cq_to_ol_flags(struct mlx5_rxq_data *rxq, volatile struct mlx5_cqe *cqe);
 
 uint32_t mlx5_ptype_table[] __rte_cache_aligned = {
 	[0xff] = RTE_PTYPE_ALL_MASK, /* Last entry for errored packet. */
@@ -200,7 +200,7 @@ mlx5_set_ptype_table(void)
  *   Size of tailroom.
  */
 static inline size_t
-tx_mlx5_wq_tailroom(struct txq *txq, void *addr)
+tx_mlx5_wq_tailroom(struct mlx5_txq_data *txq, void *addr)
 {
 	size_t tailroom;
 	tailroom = (uintptr_t)(txq->wqes) +
@@ -258,7 +258,7 @@ mlx5_copy_to_wq(void *dst, const void *src, size_t n,
 int
 mlx5_tx_descriptor_status(void *tx_queue, uint16_t offset)
 {
-	struct txq *txq = tx_queue;
+	struct mlx5_txq_data *txq = tx_queue;
 	uint16_t used;
 
 	mlx5_tx_complete(txq);
@@ -282,7 +282,7 @@ mlx5_tx_descriptor_status(void *tx_queue, uint16_t offset)
 int
 mlx5_rx_descriptor_status(void *rx_queue, uint16_t offset)
 {
-	struct rxq *rxq = rx_queue;
+	struct mlx5_rxq_data *rxq = rx_queue;
 	struct rxq_zip *zip = &rxq->zip;
 	volatile struct mlx5_cqe *cqe;
 	const unsigned int cqe_n = (1 << rxq->cqe_n);
@@ -334,7 +334,7 @@ mlx5_rx_descriptor_status(void *rx_queue, uint16_t offset)
 uint16_t
 mlx5_tx_burst(void *dpdk_txq, struct rte_mbuf **pkts, uint16_t pkts_n)
 {
-	struct txq *txq = (struct txq *)dpdk_txq;
+	struct mlx5_txq_data *txq = (struct mlx5_txq_data *)dpdk_txq;
 	uint16_t elts_head = txq->elts_head;
 	const uint16_t elts_n = 1 << txq->elts_n;
 	const uint16_t elts_m = elts_n - 1;
@@ -747,7 +747,7 @@ next_wqe:
  *   Packet length.
  */
 static inline void
-mlx5_mpw_new(struct txq *txq, struct mlx5_mpw *mpw, uint32_t length)
+mlx5_mpw_new(struct mlx5_txq_data *txq, struct mlx5_mpw *mpw, uint32_t length)
 {
 	uint16_t idx = txq->wqe_ci & ((1 << txq->wqe_n) - 1);
 	volatile struct mlx5_wqe_data_seg (*dseg)[MLX5_MPW_DSEG_MAX] =
@@ -787,7 +787,7 @@ mlx5_mpw_new(struct txq *txq, struct mlx5_mpw *mpw, uint32_t length)
  *   Pointer to MPW session structure.
  */
 static inline void
-mlx5_mpw_close(struct txq *txq, struct mlx5_mpw *mpw)
+mlx5_mpw_close(struct mlx5_txq_data *txq, struct mlx5_mpw *mpw)
 {
 	unsigned int num = mpw->pkts_n;
 
@@ -821,7 +821,7 @@ mlx5_mpw_close(struct txq *txq, struct mlx5_mpw *mpw)
 uint16_t
 mlx5_tx_burst_mpw(void *dpdk_txq, struct rte_mbuf **pkts, uint16_t pkts_n)
 {
-	struct txq *txq = (struct txq *)dpdk_txq;
+	struct mlx5_txq_data *txq = (struct mlx5_txq_data *)dpdk_txq;
 	uint16_t elts_head = txq->elts_head;
 	const uint16_t elts_n = 1 << txq->elts_n;
 	const uint16_t elts_m = elts_n - 1;
@@ -964,7 +964,8 @@ mlx5_tx_burst_mpw(void *dpdk_txq, struct rte_mbuf **pkts, uint16_t pkts_n)
  *   Packet length.
  */
 static inline void
-mlx5_mpw_inline_new(struct txq *txq, struct mlx5_mpw *mpw, uint32_t length)
+mlx5_mpw_inline_new(struct mlx5_txq_data *txq, struct mlx5_mpw *mpw,
+		    uint32_t length)
 {
 	uint16_t idx = txq->wqe_ci & ((1 << txq->wqe_n) - 1);
 	struct mlx5_wqe_inl_small *inl;
@@ -999,7 +1000,7 @@ mlx5_mpw_inline_new(struct txq *txq, struct mlx5_mpw *mpw, uint32_t length)
  *   Pointer to MPW session structure.
  */
 static inline void
-mlx5_mpw_inline_close(struct txq *txq, struct mlx5_mpw *mpw)
+mlx5_mpw_inline_close(struct mlx5_txq_data *txq, struct mlx5_mpw *mpw)
 {
 	unsigned int size;
 	struct mlx5_wqe_inl_small *inl = (struct mlx5_wqe_inl_small *)
@@ -1034,7 +1035,7 @@ uint16_t
 mlx5_tx_burst_mpw_inline(void *dpdk_txq, struct rte_mbuf **pkts,
 			 uint16_t pkts_n)
 {
-	struct txq *txq = (struct txq *)dpdk_txq;
+	struct mlx5_txq_data *txq = (struct mlx5_txq_data *)dpdk_txq;
 	uint16_t elts_head = txq->elts_head;
 	const uint16_t elts_n = 1 << txq->elts_n;
 	const uint16_t elts_m = elts_n - 1;
@@ -1260,7 +1261,7 @@ mlx5_tx_burst_mpw_inline(void *dpdk_txq, struct rte_mbuf **pkts,
  *   Packet length.
  */
 static inline void
-mlx5_empw_new(struct txq *txq, struct mlx5_mpw *mpw, int padding)
+mlx5_empw_new(struct mlx5_txq_data *txq, struct mlx5_mpw *mpw, int padding)
 {
 	uint16_t idx = txq->wqe_ci & ((1 << txq->wqe_n) - 1);
 
@@ -1302,7 +1303,7 @@ mlx5_empw_new(struct txq *txq, struct mlx5_mpw *mpw, int padding)
  *   Number of consumed WQEs.
  */
 static inline uint16_t
-mlx5_empw_close(struct txq *txq, struct mlx5_mpw *mpw)
+mlx5_empw_close(struct mlx5_txq_data *txq, struct mlx5_mpw *mpw)
 {
 	uint16_t ret;
 
@@ -1333,7 +1334,7 @@ mlx5_empw_close(struct txq *txq, struct mlx5_mpw *mpw)
 uint16_t
 mlx5_tx_burst_empw(void *dpdk_txq, struct rte_mbuf **pkts, uint16_t pkts_n)
 {
-	struct txq *txq = (struct txq *)dpdk_txq;
+	struct mlx5_txq_data *txq = (struct mlx5_txq_data *)dpdk_txq;
 	uint16_t elts_head = txq->elts_head;
 	const uint16_t elts_n = 1 << txq->elts_n;
 	const uint16_t elts_m = elts_n - 1;
@@ -1647,7 +1648,7 @@ rxq_cq_to_pkt_type(volatile struct mlx5_cqe *cqe)
  *   with error.
  */
 static inline int
-mlx5_rx_poll_len(struct rxq *rxq, volatile struct mlx5_cqe *cqe,
+mlx5_rx_poll_len(struct mlx5_rxq_data *rxq, volatile struct mlx5_cqe *cqe,
 		 uint16_t cqe_cnt, uint32_t *rss_hash)
 {
 	struct rxq_zip *zip = &rxq->zip;
@@ -1758,7 +1759,7 @@ mlx5_rx_poll_len(struct rxq *rxq, volatile struct mlx5_cqe *cqe,
  *   Offload flags (ol_flags) for struct rte_mbuf.
  */
 static inline uint32_t
-rxq_cq_to_ol_flags(struct rxq *rxq, volatile struct mlx5_cqe *cqe)
+rxq_cq_to_ol_flags(struct mlx5_rxq_data *rxq, volatile struct mlx5_cqe *cqe)
 {
 	uint32_t ol_flags = 0;
 	uint16_t flags = rte_be_to_cpu_16(cqe->hdr_type_etc);
@@ -1797,7 +1798,7 @@ rxq_cq_to_ol_flags(struct rxq *rxq, volatile struct mlx5_cqe *cqe)
 uint16_t
 mlx5_rx_burst(void *dpdk_rxq, struct rte_mbuf **pkts, uint16_t pkts_n)
 {
-	struct rxq *rxq = dpdk_rxq;
+	struct mlx5_rxq_data *rxq = dpdk_rxq;
 	const unsigned int wqe_cnt = (1 << rxq->elts_n) - 1;
 	const unsigned int cqe_cnt = (1 << rxq->cqe_n) - 1;
 	const unsigned int sges_n = rxq->sges_n;
@@ -1886,6 +1887,11 @@ mlx5_rx_burst(void *dpdk_rxq, struct rte_mbuf **pkts, uint16_t pkts_n)
 				pkt->vlan_tci =
 					rte_be_to_cpu_16(cqe->vlan_info);
 			}
+			if (rxq->hw_timestamp) {
+				pkt->timestamp =
+					rte_be_to_cpu_64(cqe->timestamp);
+				pkt->ol_flags |= PKT_RX_TIMESTAMP;
+			}
 			if (rxq->crc_present)
 				len -= ETHER_CRC_LEN;
 			PKT_LEN(pkt) = len;
@@ -1927,9 +1933,9 @@ skip:
 		return 0;
 	/* Update the consumer index. */
 	rxq->rq_ci = rq_ci >> sges_n;
-	rte_wmb();
+	rte_io_wmb();
 	*rxq->cq_db = rte_cpu_to_be_32(rxq->cq_ci);
-	rte_wmb();
+	rte_io_wmb();
 	*rxq->rq_db = rte_cpu_to_be_32(rxq->rq_ci);
 #ifdef MLX5_PMD_SOFT_COUNTERS
 	/* Increment packets counter. */
@@ -2037,7 +2043,7 @@ priv_check_vec_tx_support(struct priv *priv)
 }
 
 int __attribute__((weak))
-rxq_check_vec_support(struct rxq *rxq)
+rxq_check_vec_support(struct mlx5_rxq_data *rxq)
 {
 	(void)rxq;
 	return -ENOTSUP;

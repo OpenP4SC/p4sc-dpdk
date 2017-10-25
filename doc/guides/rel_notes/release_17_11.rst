@@ -47,6 +47,23 @@ New Features
   256 ports in dpdk. All ethdev APIs which have port_id as parameter are changed
   in the meantime.
 
+* **Modified the return type of rte_eth_stats_reset.**
+
+  Changed return type of ``rte_eth_stats_reset`` from ``void`` to ``int``
+  so the caller may know whether a device supports the operation or not
+  and if the operation was carried out.
+
+* **Added a new driver for Marvell Armada 7k/8k devices.**
+
+  Added the new mrvl net driver for Marvell Armada 7k/8k devices. See the
+  "Network Interface Controller Drivers" document for more details on this new
+  driver.
+
+* **Added SoftNIC PMD.**
+
+  Added new SoftNIC PMD. This virtual device offers applications a software
+  fallback support for traffic management.
+
 * **nfp: Added PF support.**
 
   Previously Netronome's NFP PMD had just support for VFs. PF support is
@@ -63,6 +80,96 @@ New Features
 
    * Support for Flow API
    * Support for Tx and Rx descriptor status functions
+
+* **Updated QAT crypto PMD.**
+
+  Performance enhancements:
+
+  * Removed atomics from the internal queue pair structure.
+  * Coalesce writes to HEAD CSR on response processing.
+  * Coalesce writes to TAIL CSR on request processing.
+
+  Additional support for:
+
+  * AES CCM algorithm.
+
+* **Updated the AESNI MB PMD.**
+
+  The AESNI MB PMD has been updated with additional support for:
+
+  * DES CBC algorithm.
+  * DES DOCSIS BPI algorithm.
+
+  This requires the IPSec Multi-buffer library 0.47. For more details,
+  check out the AESNI MB PMD documenation.
+
+* **Updated the OpenSSL PMD.**
+
+  The OpenSSL PMD has been updated with additional support for:
+
+  * DES CBC algorithm.
+  * AES CCM algorithm.
+
+* **Added NXP DPAA SEC crypto PMD.**
+
+  A new "dpaa_sec" hardware based crypto PMD for NXP DPAA devices has been
+  added. See the "Crypto Device Drivers" document for more details on this
+  driver.
+
+* **Added MRVL crypto PMD.**
+
+  A new crypto PMD has been added, which provides several ciphering and hashing
+  algorithms. All cryptography operations use the MUSDK library crypto API.
+
+* **Add new benchmarking mode to dpdk-test-crypto-perf application.**
+
+  Added new "PMD cyclecount" benchmark mode to dpdk-test-crypto-perf application
+  that displays more detailed breakdown of CPU cycles used by hardware
+  acceleration.
+
+* **Added IOMMU support to libvhost-user**
+
+  Implemented device IOTLB in Vhost-user backend, and enabled Virtio's IOMMU
+  feature.
+
+* **Added Membership library (rte_member).**
+
+  Added membership library. It provides an API for DPDK applications to insert a
+  new member, delete an existing member, or query the existence of a member in a
+  given set, or a group of sets. For the case of a group of sets the library
+  will return not only whether the element has been inserted before in one of
+  the sets but also which set it belongs to.
+
+  The Membership Library is an extension and generalization of a traditional
+  filter (for example Bloom Filter) structure that has multiple usages in a wide
+  variety of workloads and applications. In general, the Membership Library is a
+  data structure that provides a “set-summary” and responds to set-membership
+  queries whether a certain member belongs to a set(s).
+
+  See the :ref:`Membership Library <Member_Library>` documentation in
+  the Programmers Guide document, for more information.
+
+* **Added the Generic Segmentation Offload Library.**
+
+  Added the Generic Segmentation Offload (GSO) library to enable
+  applications to split large packets (e.g. MTU is 64KB) into small
+  ones (e.g. MTU is 1500B). Supported packet types are:
+
+  * TCP/IPv4 packets.
+  * VxLAN packets, which must have an outer IPv4 header, and contain
+    an inner TCP/IPv4 packet.
+  * GRE packets, which must contain an outer IPv4 header, and inner
+    TCP/IPv4 headers.
+
+  The GSO library doesn't check if the input packets have correct
+  checksums, and doesn't update checksums for output packets.
+  Additionally, the GSO library doesn't process IP fragmented packets.
+
+* **Added the Flow Classification Library.**
+
+  Added the Flow Classification library, it provides an API for DPDK
+  applications to classify an input packet by matching it against a set of flow
+  rules. It uses the librte_table API to manage the flow rules.
 
 
 Resolved Issues
@@ -140,6 +247,11 @@ API Changes
    Also, make sure to start the actual text at the margin.
    =========================================================
 
+* **Ethdev device name length increased**
+
+  The size of internal device name is increased to 64 characters
+  to allow for storing longer bus specific name.
+
 * **Service cores API updated for usability**
 
   The service cores API has been changed, removing pointers from the API
@@ -161,6 +273,30 @@ API Changes
   * Added ``flags`` param in ``rte_mempool_xmem_size`` and
     ``rte_mempool_xmem_usage``.
 
+* Xen dom0 in EAL was removed, as well as xenvirt PMD and vhost_xen.
+
+* ``rte_mem_phy2mch`` was used in Xen dom0 to obtain the physical address;
+  remove this API as Xen dom0 support was removed.
+
+* **Add return value to stats_get dev op API**
+
+  The ``stats_get`` dev op API return value has been changed to be int.
+  By this way PMDs can return an error value in case of failure at stats
+  getting process time.
+
+* **Modified the rte_cryptodev_allocate_driver function in the cryptodev library.**
+
+  The function ``rte_cryptodev_allocate_driver()`` has been modified.
+  An extra parameter ``struct cryptodev_driver *crypto_drv`` has been added.
+
+* **Removed deprecated functions to manage log level or type.**
+
+  The functions ``rte_set_log_level()``, ``rte_get_log_level()``,
+  ``rte_set_log_type()`` and ``rte_get_log_type()`` have been removed.
+  They are respectively replaced by ``rte_log_set_global_level()``,
+  ``rte_log_get_global_level()``, ``rte_log_set_level()`` and
+  ``rte_log_get_level()``.
+
 
 ABI Changes
 -----------
@@ -179,6 +315,23 @@ ABI Changes
 
   The size of the field ``port_id`` in the ``rte_eth_dev_data`` structure
   changed, as described in the `New Features` section.
+
+
+Removed Items
+-------------
+
+.. This section should contain removed items in this release. Sample format:
+
+   * Add a short 1-2 sentence description of the removed item in the past
+     tense.
+
+   This section is a comment. do not overwrite or remove it.
+   Also, make sure to start the actual text at the margin.
+   =========================================================
+
+* The crypto performance unit tests have been removed,
+  replaced by the dpdk-test-crypto-perf application.
+
 
 Shared Library Versions
 -----------------------
@@ -199,15 +352,17 @@ The libraries prepended with a plus sign were incremented in this version.
 .. code-block:: diff
 
      librte_acl.so.2
-     librte_bitratestats.so.2
+   + librte_bitratestats.so.2
      librte_cfgfile.so.2
      librte_cmdline.so.2
      librte_cryptodev.so.3
      librte_distributor.so.1
-     librte_eal.so.5
-     librte_ethdev.so.8
-     librte_eventdev.so.2
+   + librte_eal.so.6
+   + librte_ethdev.so.8
+   + librte_eventdev.so.3
+   + librte_flow_classify.so.1
      librte_gro.so.1
+   + librte_gso.so.1
      librte_hash.so.2
      librte_ip_frag.so.1
      librte_jobstats.so.1
@@ -220,20 +375,21 @@ The libraries prepended with a plus sign were incremented in this version.
      librte_meter.so.1
      librte_metrics.so.1
      librte_net.so.1
-     librte_pdump.so.2
+   + librte_pdump.so.2
      librte_pipeline.so.3
-     librte_pmd_bnxt.so.2
-     librte_pmd_bond.so.2
-     librte_pmd_i40e.so.2
-     librte_pmd_ixgbe.so.2
+   + librte_pmd_bnxt.so.2
+   + librte_pmd_bond.so.2
+   + librte_pmd_i40e.so.2
+   + librte_pmd_ixgbe.so.2
      librte_pmd_ring.so.2
-     librte_pmd_vhost.so.2
+   + librte_pmd_softnic.so.1
+   + librte_pmd_vhost.so.2
      librte_port.so.3
      librte_power.so.1
      librte_reorder.so.1
      librte_ring.so.1
      librte_sched.so.1
-     librte_table.so.2
+   + librte_table.so.3
      librte_timer.so.1
      librte_vhost.so.3
 
